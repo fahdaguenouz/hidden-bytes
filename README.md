@@ -55,6 +55,75 @@ The `evasion` name is retained because it comes from the assignment. The impleme
 These exclusions are part of the scope, not unfinished features to silently assume are present.
 
 ---
+## HBX1 Encryption and Recovery Flow
+
+### 1. Encryption flow
+
+```mermaid
+flowchart TD
+    A["Original file"] --> B["Read file bytes"]
+    B --> C["Generate AES-256 key and nonce"]
+    C --> D["Encrypt using AES-256-GCM"]
+    D --> E["Produce ciphertext and authentication tag"]
+    E --> F["Build JSON metadata"]
+    F --> G["Build HBX1 container"]
+    G --> H["Add random padding"]
+    H --> I["Save .hbx container"]
+    C --> J["Save separate .key file"]
+
+    G -. "Container contains magic bytes, header length, metadata, ciphertext and tag" .-> K["HBX1 format"]
+```
+
+### 2. Inspection and recovery flow
+
+```mermaid
+flowchart TD
+    A["Existing .hbx container"] --> B["Read magic bytes and header length"]
+    B --> C["Parse JSON metadata"]
+    C --> D{"Requested operation?"}
+
+    D -- "Inspect" --> E["Display metadata"]
+    E --> F["Finish without decrypting"]
+
+    D -- "Decrypt" --> G["Load separate key file"]
+    G --> H{"Delay enabled?"}
+    H -- "Yes" --> I["Wait for configured delay"]
+    H -- "No" --> J["Attempt authenticated decryption"]
+    I --> J
+
+    J --> K{"Authentication succeeds?"}
+    K -- "No" --> L["Report decryption failure"]
+    K -- "Yes" --> M["Write recovered file bytes"]
+    M --> N["Compare SHA-256 hashes"]
+    N --> O["Confirm byte-for-byte recovery"]
+```
+
+### 3. How to read the container
+
+```mermaid
+flowchart TD
+    A["HBX1 container"] --> B["4-byte magic value"]
+    B --> C["4-byte header length"]
+    C --> D["JSON metadata"]
+    D --> E["AES-GCM ciphertext"]
+    E --> F["16-byte authentication tag"]
+    F --> G["Random padding"]
+```
+
+**Important notes**
+
+- **Magic value:** identifies the container format.
+- **Header length:** a 4-byte unsigned, big-endian integer specifying the JSON metadata length in bytes.
+- **JSON metadata:** stores information such as the algorithm, nonce, original filename, original size, ciphertext length, and recovery delay.
+- **Ciphertext and authentication tag:** AES-256-GCM encrypts the original bytes and produces a tag used to verify authenticity and integrity during decryption.
+- **Random padding:** increases the container size; it is not part of the original file and does not strengthen the encryption.
+- **Recovery delay:** the recovery program waits before attempting decryption. The container does not decrypt itself or execute the recovered file.
+- **SHA-256 comparison:** matching hashes provide evidence that the recovered file is byte-for-byte identical to the original.
+
+**Note:** `--inspect` displays metadata without authenticating the ciphertext. Authentication is checked when decryption is attempted.
+
+
+---
 
 ## 2. Subject and audit scope
 
@@ -154,74 +223,114 @@ A README cannot prove the VM is isolated. Isolation must be checked in the hyper
 
 ## 4. Tool 1 — Evasion / HBX1 container
 
-### 4.1 What it does
+> **Scope note:** `evasion` is the assignment's original tool name. This safe edition demonstrates authenticated encryption, binary-container parsing, padding, and delayed recovery. It does **not** bypass antivirus, execute recovered files, or implement a malware loader.
 
-`hidden_bytes.evasion` reads an input file as bytes and packages an encrypted copy into an HBX1 container. It creates a fresh AES-256 key and a fresh 96-bit nonce, encrypts with AES-GCM, stores metadata, and appends random padding until the requested final size is reached.
+### 4.1 What the tool does
 
-The key is written to a separate file named `<output>.key`. The tool can inspect metadata and recover the original bytes after the configured delay. It never executes the recovered file.
+`hidden_bytes.evasion` has three modes:
 
-### 4.2 Basic usage
+- `--encrypt`: reads a file as bytes, encrypts it using AES-256-GCM, writes an HBX1 container, and writes the generated key to a separate `<output>.key` file.
+- `--inspect`: parses and displays the container metadata without decrypting its contents.
+- `--decrypt`: reads the container and key, waits for the recorded recovery delay unless `--no-delay` is supplied, authenticates and decrypts the ciphertext, then writes the recovered bytes to disk. It never executes the recovered file.
 
-Create a harmless text sample:
+The optional `--add-size` value requests an increase in the **final container size**. The tool fills the container with random padding to reach the target size. Padding is not encrypted content and does not make the encryption stronger.
 
-```powershell
-Set-Content -Path sample.txt -Value "Hello from Hidden-Bytes"
-```
+### 4.2 CLI reference — all options
 
-Linux/macOS alternative:
+Display help:
 
 ```bash
-printf 'Hello from Hidden-Bytes\n' > sample.txt
+python3 -m hidden_bytes.evasion --help
 ```
 
-Encrypt it and add 1 MiB to the original file's size:
+The module expects exactly one mode (`--encrypt`, `--decrypt`, or `--inspect`) and a positional input path called `source`.
 
-```powershell
-py -m hidden_bytes.evasion --encrypt sample.txt --output sample.hbx --add-size 1 --delay 5
+| Option | Meaning | Notes |
+|---|---|---|
+| `source` | Input file or HBX1 container | Required positional argument |
+| `--encrypt` | Encrypt/package the source file | Must be used with `--output` |
+| `--decrypt` | Recover a file from an HBX1 container | Must be used with `--output` |
+| `--inspect` | Print container metadata | Does not decrypt the payload |
+| `--output PATH` | Destination path | Required for encryption and decryption |
+| `--add-size MB` | Requested increase in final container size | Help default: `0.01` MB; `1` requests 1 MiB (1,048,576 bytes) |
+| `--delay SECONDS` | Recovery delay stored in the container | Help default: `101` seconds; set a small value such as `2` for a quick demo |
+| `--key PATH` | Key file to use during decryption | Encryption generates `<output>.key` automatically |
+| `--no-delay` | Skip the stored delay during recovery | Useful for controlled tests; do not use it when demonstrating the delay |
+
+The defaults shown above are those reported by this project's CLI help. Explicitly set `--add-size` and `--delay` in demonstrations so the behavior is reproducible.
+
+### 4.3 Complete Linux / Kali walkthrough
+
+Run commands from the repository root (`~/Desktop/hidden-bytes`) with the virtual environment activated.
+
+#### Step 1 — Create a harmless sample
+
+```bash
+printf 'Hello from Hidden-Bytes -- sample file\n' > sample.txt
+wc -c sample.txt
 ```
 
-Linux/macOS:
+`wc -c` shows the exact input length. The example string above is **39 bytes**, including its final newline.
+
+#### Step 2 — Encrypt and add 1 MiB to the final size
 
 ```bash
 python3 -m hidden_bytes.evasion \
   --encrypt sample.txt \
   --output sample.hbx \
   --add-size 1 \
-  --delay 5
+  --delay 2
 ```
 
-The command produces:
+Expected artifacts:
 
 ```text
-sample.hbx       # encrypted data container
-sample.hbx.key   # Base64-encoded AES-256 key; keep it private
+sample.txt       # original test file
+sample.hbx       # encrypted HBX1 data container
+sample.hbx.key   # generated key; keep it private
 ```
 
-`--add-size 1` means an additional **1 MiB** (1,048,576 bytes, subject to the tool's rounded MiB calculation) beyond the original input size. The container metadata and ciphertext must fit inside the requested final size; if they do not, the command reports an error instead of silently producing a smaller increase.
+Representative output from the tested 39-byte sample:
 
-For a large-size demonstration similar to the assignment's example, use `--add-size 101`. This can create a large file even for a small input, so make sure the VM has enough disk space.
-
-### 4.3 Inspect the container
-
-```powershell
-py -m hidden_bytes.evasion --inspect sample.hbx
+```text
+[OK] Encryption completed.
+[INFO] Input:       sample.txt
+[INFO] Container:   sample.hbx
+[INFO] Key:         .../sample.hbx.key
+[INFO] Original:    39 bytes
+[INFO] Container:   1048615 bytes
+[INFO] Added:       1048576 bytes
+[INFO] Delay:       2 second(s)
+[INFO] The container is data only; nothing is executed.
 ```
 
-Or:
+The exact key path depends on where the repository is located. `--add-size 1` requests 1 MiB (1,048,576 bytes) above the input size, so this sample's final container is 39 + 1,048,576 = **1,048,615 bytes**. Metadata and encryption overhead are accounted for inside that final-size target.
+
+#### Step 3 — Inspect the container
 
 ```bash
 python3 -m hidden_bytes.evasion --inspect sample.hbx
 ```
 
-Inspection prints the header metadata without decrypting the payload. It does **not** reveal the encryption key or prove that the ciphertext is authentic; authentication is checked during recovery.
+The command prints metadata similar to:
 
-### 4.4 Recover the original file
-
-```powershell
-py -m hidden_bytes.evasion --decrypt sample.hbx --output recovered.txt --key sample.hbx.key
+```json
+{
+  "algorithm": "AES-256-GCM",
+  "ciphertext_length": 55,
+  "container_ciphertext_bytes": 55,
+  "container_magic": "HBX1",
+  "container_size_bytes": 1048615,
+  "delay_seconds": 2.0,
+  "nonce": "<random Base64 value>",
+  "original_name": "sample.txt",
+  "original_size": 39
+}
 ```
 
-Linux/macOS:
+The nonce changes between encryption runs, so the example nonce above is a placeholder. Inspection shows metadata; it does not reveal the secret key and does not by itself validate the ciphertext's authenticity. Authentication is checked during decryption.
+
+#### Step 4 — Recover the original file
 
 ```bash
 python3 -m hidden_bytes.evasion \
@@ -230,111 +339,167 @@ python3 -m hidden_bytes.evasion \
   --key sample.hbx.key
 ```
 
-The delay stored in the container is applied before decryption. For a quick local test, `--no-delay` skips this wait:
+Expected behavior for a container created with `--delay 2`:
 
-```powershell
-py -m hidden_bytes.evasion --decrypt sample.hbx --output recovered.txt --key sample.hbx.key --no-delay
+```text
+[INFO] Recovery delayed for 2 second(s)...
+[OK] Recovery completed.
+[INFO] Recovered file: recovered.txt
+[INFO] The recovered file was written to disk but was NOT executed.
 ```
 
-**Audit note:** do not use `--no-delay` when demonstrating that the configured delay is enforced.
+For a quick test that skips the configured wait:
 
-### 4.5 Verify recovery
-
-PowerShell:
-
-```powershell
-Get-FileHash sample.txt -Algorithm SHA256
-Get-FileHash recovered.txt -Algorithm SHA256
+```bash
+python3 -m hidden_bytes.evasion \
+  --decrypt sample.hbx \
+  --output recovered-no-delay.txt \
+  --key sample.hbx.key \
+  --no-delay
 ```
 
-Linux/macOS:
+Use a different output filename if you want to keep both recovery results. `--no-delay` bypasses only the demonstration wait; it does not bypass encryption or authentication.
+
+#### Step 5 — Verify recovery using SHA-256
 
 ```bash
 sha256sum sample.txt recovered.txt
 ```
 
-The two SHA-256 values should match. The container hash will normally differ because it contains encrypted bytes, metadata, and padding.
-
-Check sizes:
-
-PowerShell:
-
-```powershell
-(Get-Item sample.txt).Length
-(Get-Item sample.hbx).Length
-```
-
-Linux/macOS:
-
-```bash
-stat -c '%n %s bytes' sample.txt sample.hbx
-```
-
-### 4.6 HBX1 binary format
+In the test run shared during this project, both files produced the same hash:
 
 ```text
-Offset
-  |
-  v
-+----------------------+  4 bytes
-| Magic: "HBX1"        |  Identifies this educational container
-+----------------------+  4 bytes
-| Header length        |  Unsigned 32-bit, big-endian integer
-+----------------------+
-| JSON metadata        |  Algorithm, nonce, original size/name,
-|                      |  ciphertext length, recovery delay
-+----------------------+
-| AES-GCM ciphertext   |  Encrypted input + 16-byte authentication tag
-| and authentication  |
-| tag                  |
-+----------------------+
-| Random padding       |  Fills the requested final size
-+----------------------+
+06570c37ec2d0014c9bb0c10e6e4934f13de8adc8ca73b11107afdeebdca2310  sample.txt
+06570c37ec2d0014c9bb0c10e6e4934f13de8adc8ca73b11107afdeebdca2310  recovered.txt
 ```
 
-The header's `ciphertext_length` tells the recovery code where the ciphertext ends. The parser does not need to interpret the random padding as ciphertext.
+That hash belongs to the exact file content used in that recorded run. If you create a new sample using the command above, the hash will be different, but the original and recovered hashes should still match. Matching SHA-256 hashes provide evidence that the recovered file is byte-for-byte identical to the original.
 
-### 4.7 Encryption and recovery flow
+Alternative byte-for-byte comparison:
+
+```bash
+cmp sample.txt recovered.txt && echo 'Files match'
+```
+
+Check file sizes:
+
+```bash
+stat -c '%n: %s bytes' sample.txt sample.hbx recovered.txt
+```
+
+### 4.4 Other useful test commands
+
+Inspect the CLI options:
+
+```bash
+python3 -m hidden_bytes.evasion --help
+```
+
+Create a second container with a different delay and size increase:
+
+```bash
+python3 -m hidden_bytes.evasion \
+  --encrypt sample.txt \
+  --output sample-small.hbx \
+  --add-size 0.1 \
+  --delay 5
+```
+
+Inspect it:
+
+```bash
+python3 -m hidden_bytes.evasion --inspect sample-small.hbx
+```
+
+Recover it without waiting (for a quick test):
+
+```bash
+python3 -m hidden_bytes.evasion \
+  --decrypt sample-small.hbx \
+  --output recovered-small.txt \
+  --key sample-small.hbx.key \
+  --no-delay
+```
+
+Compare the recovered content:
+
+```bash
+sha256sum sample.txt recovered-small.txt
+```
+
+Run the project's automated tests from the repository root:
+
+```bash
+python3 -m pytest -q
+```
+
+### 4.5 HBX1 container layout
+
+The container is a custom **data format**, not a Windows PE executable.
+
+```text
++-----------------------------------------+
+| Magic: "HBX1"                 (4 bytes) |
++-----------------------------------------+
+| Header length (uint32, big-endian)       |
++-----------------------------------------+
+| JSON metadata                            |
+| algorithm, nonce, original name/size,    |
+| ciphertext length, recovery delay       |
++-----------------------------------------+
+| AES-GCM ciphertext                       |
+| encrypted original bytes + 16-byte tag   |
++-----------------------------------------+
+| Random padding                           |
+| fills remaining bytes to target size    |
++-----------------------------------------+
+```
+
+The `ciphertext_length` metadata field identifies the encrypted section's length, including the GCM authentication tag. The recovery code uses this length to avoid treating padding as ciphertext.
+
+### 4.6 Encryption flow diagram
 
 ```mermaid
 flowchart TD
-    A[Input file] --> B[Read original bytes]
+    A[Input file: sample.txt] --> B[Read original bytes]
     B --> C[Generate fresh AES-256 key and 96-bit nonce]
-    C --> D[AES-256-GCM encrypts bytes]
-    D --> E[Create JSON metadata]
-    E --> F[Write HBX1 magic, header length, header and ciphertext]
-    F --> G[Append random padding]
-    G --> H[Check final file size]
-    H --> I[Write separate .key file]
-    I --> J[HBX1 container and key file]
+    C --> D[Encrypt bytes with AES-256-GCM]
+    D --> E[Create metadata: name, size, nonce, delay, ciphertext length]
+    E --> F[Build HBX1: magic + header length + metadata + ciphertext]
+    F --> G[Append random padding to requested final size]
+    G --> H[Write sample.hbx]
+    C --> I[Write separate sample.hbx.key]
+    H --> J[Container and key are ready]
+    I --> J
 ```
 
-Recovery:
+### 4.7 Inspection and recovery flow diagram
 
 ```mermaid
 flowchart TD
-    A[HBX1 container + key file] --> B[Validate magic and parse header]
-    B --> C[Read exactly the declared ciphertext length]
-    C --> D[Wait for recorded delay unless --no-delay]
-    D --> E[Load and validate AES key]
-    E --> F{AES-GCM authentication succeeds?}
-    F -- No --> G[Report wrong key or modified data]
-    F -- Yes --> H[Verify recovered length]
-    H --> I[Write recovered file to disk]
-    I --> J[Stop: never execute recovered file]
+    A[HBX1 container] --> B[Read magic and header length]
+    B --> C[Parse JSON metadata]
+    C --> D[Display metadata for --inspect]
+    C --> E[For --decrypt: read declared ciphertext bytes]
+    E --> F[Wait for stored delay unless --no-delay]
+    F --> G[Load the supplied key]
+    G --> H{AES-GCM authentication succeeds?}
+    H -- No --> I[Report decryption/authentication failure]
+    H -- Yes --> J[Check recovered byte length]
+    J --> K[Write recovered file to disk]
+    K --> L[Stop: never execute recovered file]
 ```
 
-### 4.8 Security properties and limitations
+### 4.8 What the tool does and does not prove
 
-- **Confidentiality:** AES-GCM encrypts the input bytes.
-- **Integrity/authenticity:** AES-GCM detects ciphertext or authenticated-data changes when decrypting with the correct key.
-- **Fresh nonce:** the program generates a new key and nonce for each package. Reusing a GCM nonce with the same key is unsafe.
-- **Key handling:** the separate `.key` file is convenient for a classroom demo, not a complete production key-management design. Anyone who obtains the key and container can recover the file.
-- **Padding:** random padding changes size and can affect static inspection. It does not establish antivirus evasion.
-- **Delay:** it is a wait before recovery, not a delayed execution mechanism.
-- **Format:** HBX1 is a custom data container, **not a valid Windows PE executable**.
-
----
+- **Encryption:** the input bytes are encrypted using AES-256-GCM.
+- **Authentication:** a wrong key or modified authenticated ciphertext should fail authentication during recovery.
+- **Size manipulation:** padding makes the final container reach the requested size increase.
+- **Delay:** the configured wait occurs before recovery, not before execution.
+- **Integrity evidence:** matching original/recovered SHA-256 hashes demonstrates successful byte-for-byte recovery.
+- **No antivirus bypass:** encryption, padding, file-size changes, and matching recovery hashes do not demonstrate Defender or VirusTotal evasion.
+- **Key handling:** the `.key` file is separate from the container but is saved beside it by default. Protect it and do not commit it to version control.
+- **No execution:** the container is data; recovered bytes are written to disk and never launched by this tool.
 
 ## 5. Tool 2 — Polymorphic generator
 
