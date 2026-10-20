@@ -601,16 +601,31 @@ The files should have different hashes because their nonce and inert variant com
 
 ```mermaid
 flowchart TD
-    A[Text or UTF-8 text file] --> B[Check non-empty and 4096-byte limit]
-    B --> C[Apply basic blocked-token checks]
-    C --> D[Calculate SHA-256 of text]
-    D --> E[Generate random nonce and inert comment]
-    E --> F[Write Python demonstration]
-    F --> G[Run generated program]
-    G --> H[Verify embedded text digest]
-    H --> I[Print the same text]
-    I --> J[Replace local nonce]
-    J --> K[File hash changes; displayed behavior stays stable]
+    A["Run polymorphic CLI"] --> B["Read payload argument"]
+    B --> C{"File path exists?"}
+    C -->|Yes| D["Read UTF-8 text file"]
+    C -->|No| E["Treat argument as literal text"]
+    D --> F["Validate payload"]
+    E --> F
+
+    F --> G{"Empty, too large, or blocked?"}
+    G -->|Yes| H["Raise error"]
+    G -->|No| I["Generate random nonce"]
+    I --> J["Calculate SHA-256 digest"]
+    J --> K["Insert values into template"]
+    K --> L["Add random Base64 comment"]
+    L --> M["Compile to validate syntax"]
+    M --> N["Write generated Python file"]
+
+    N --> O["User runs generated file separately"]
+    O --> P["Calculate payload SHA-256"]
+    P --> Q{"Digest matches expected value?"}
+    Q -->|No| R["Exit with integrity error"]
+    Q -->|Yes| S["Print integrity confirmation"]
+    S --> T["Display payload as text"]
+    T --> U["Replace local nonce"]
+    U --> V["Write updated source file"]
+    V --> W["Print signature updated"]
 ```
 
 ### 5.6 What “polymorphism” means in this demo
