@@ -239,6 +239,31 @@ def decrypt_gcm(key, nonce, ciphertext, aad=b""):
     return plaintext
 
 
+def encrypt_gcm(key, nonce, plaintext, aad=b""):
+    """Encrypt and authenticate a message with AES-GCM.
+
+    The result is the ciphertext with the 16-byte GCM tag appended, exactly
+    the format produced by the ``cryptography`` package.
+    """
+
+    if len(nonce) != 12:
+        raise ValueError("only 96-bit GCM nonces are supported")
+
+    h = encrypt_block(key, b"\x00" * 16)
+    j0 = nonce + b"\x00\x00\x00\x01"
+
+    stream = _keystream(key, j0, len(plaintext))
+    body = bytes(
+        byte ^ stream[index] for index, byte in enumerate(plaintext)
+    )
+
+    mask = encrypt_block(key, j0)
+    digest = _ghash(h, aad, body)
+    tag = bytes(left ^ right for left, right in zip(digest, mask))
+
+    return body + tag
+
+
 def derive_key(passphrase, salt, iterations, length=32):
     """Derive an encryption key from a passphrase with PBKDF2-HMAC-SHA256."""
 

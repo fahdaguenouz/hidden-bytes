@@ -25,7 +25,6 @@ import io
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import zipfile
@@ -37,6 +36,8 @@ from .constants import (
     RUNNER_MAGIC,
 )
 from .container import parse_container
+from ..embedding import build_executable as _package_executable
+from ..embedding import pure_aes_source
 
 # Marker block written at the very top of every generated launcher.
 _MARKER_TEMPLATE = (
@@ -232,18 +233,7 @@ if __name__ == "__main__":
 def _pure_aes_source() -> str:
     """Return the source of the dependency-free AES-GCM implementation."""
 
-    try:
-        from importlib.resources import files
-
-        source = (
-            files("hidden_bytes.evasion")
-            .joinpath("pure_aes.py")
-            .read_text(encoding="utf-8")
-        )
-    except Exception:  # noqa: BLE001 - fall back to the package directory
-        source = Path(__file__).with_name("pure_aes.py").read_text(encoding="utf-8")
-
-    return source
+    return pure_aes_source()
 
 
 def render_runner(container_name: str = RUNNER_CONTAINER_NAME) -> bytes:
@@ -460,7 +450,6 @@ def build_executable(
     output: Path,
     name: str,
     workdir: Path | None = None,
-    clean: bool = True,
 ) -> Path:
     """Package a runner and its container into a single native executable.
 
@@ -468,66 +457,18 @@ def build_executable(
     what the audit demonstration needs.
     """
 
-    if shutil.which("pyinstaller") is None and not _has_pyinstaller_module():
-        raise ValueError(
-            "PyInstaller is not available. Install it with: "
-            "python -m pip install pyinstaller"
-        )
-
     owned_workdir = workdir is None
     if workdir is None:
         workdir = Path(tempfile.mkdtemp(prefix="hbx_build_"))
 
     try:
-        container_path = container_path.resolve()
-        runner_path = runner_path.resolve()
-
-        command = [
-            sys.executable,
-            "-m",
-            "PyInstaller",
-            "--onefile",
-            "--noconfirm",
-            "--name",
+        return _package_executable(
+            runner_path,
+            output,
             name,
-            "--add-data",
-            f"{container_path}{os.pathsep}.",
-            "--distpath",
-            str(workdir / "dist"),
-            "--workpath",
-            str(workdir / "build"),
-            "--specpath",
-            str(workdir),
-            str(runner_path),
-        ]
-
-        if clean:
-            command.insert(4, "--clean")
-
-        completed = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+            extra_data=container_path,
+            workdir=workdir,
         )
-
-        if completed.returncode != 0:
-            raise ValueError(
-                "PyInstaller failed with exit code "
-                f"{completed.returncode}:\n{completed.stdout}"
-            )
-
-        built = workdir / "dist" / name
-        if sys.platform == "win32":
-            built = built.with_suffix(".exe")
-
-        if not built.is_file():
-            raise ValueError("PyInstaller did not produce the expected executable")
-
-        output.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(built, output)
-
-        return output
     finally:
         if owned_workdir:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -615,15 +556,3 @@ def build_executable_from_source(
     finally:
         if owned_workdir:
             shutil.rmtree(workdir, ignore_errors=True)
-
-
-
-def _has_pyinstaller_module() -> bool:
-    """Return True when the PyInstaller module can be imported."""
-
-    from importlib.util import find_spec
-
-    try:
-        return find_spec("PyInstaller") is not None
-    except (ImportError, ValueError):  # pragma: no cover - defensive
-        return False

@@ -1,0 +1,121 @@
+"""Shared helpers for building self-contained generated artifacts.
+
+The generated artifacts (the evasion runner and the polymorphic program) must
+run on a machine where nothing is installed. They therefore carry a copy of
+the dependency-free AES-GCM implementation, and they can optionally be
+packaged into a native executable with PyInstaller.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+def pure_aes_source() -> str:
+    """Return the source of the dependency-free AES-256-GCM implementation."""
+
+    try:
+        from importlib.resources import files
+
+        source = (
+            files("hidden_bytes.evasion")
+            .joinpath("pure_aes.py")
+            .read_text(encoding="utf-8")
+        )
+    except Exception:  # noqa: BLE001 - fall back to the package directory
+        source = (
+            Path(__file__).resolve().parent / "evasion" / "pure_aes.py"
+        ).read_text(encoding="utf-8")
+
+    return source
+
+
+def has_pyinstaller() -> bool:
+    """Return True when the PyInstaller module can be imported."""
+
+    from importlib.util import find_spec
+
+    try:
+        return find_spec("PyInstaller") is not None
+    except (ImportError, ValueError):  # pragma: no cover - defensive
+        return False
+
+
+def build_executable(
+    script_path: Path,
+    output: Path,
+    name: str,
+    extra_data: Path | None = None,
+    workdir: Path | None = None,
+) -> Path:
+    """Package a Python script into a single native executable.
+
+    Requires PyInstaller. On Windows the result is a ``.exe`` file, which is
+    what the audit demonstration needs.
+    """
+
+    if shutil.which("pyinstaller") is None and not has_pyinstaller():
+        raise ValueError(
+            "PyInstaller is not available. Install it with: "
+            "python -m pip install pyinstaller"
+        )
+
+    owned_workdir = workdir is None
+    if workdir is None:
+        workdir = Path(tempfile.mkdtemp(prefix="hbx_build_"))
+
+    try:
+        command = [
+            sys.executable,
+            "-m",
+            "PyInstaller",
+            "--onefile",
+            "--noconfirm",
+            "--clean",
+            "--name",
+            name,
+            "--distpath",
+            str(workdir / "dist"),
+            "--workpath",
+            str(workdir / "build"),
+            "--specpath",
+            str(workdir),
+        ]
+
+        if extra_data is not None:
+            command += ["--add-data", f"{extra_data.resolve()}{os.pathsep}."]
+
+        command.append(str(script_path.resolve()))
+
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        if completed.returncode != 0:
+            raise ValueError(
+                "PyInstaller failed with exit code "
+                f"{completed.returncode}:\n{completed.stdout}"
+            )
+
+        built = workdir / "dist" / name
+        if sys.platform == "win32":
+            built = built.with_suffix(".exe")
+
+        if not built.is_file():
+            raise ValueError("PyInstaller did not produce the expected executable")
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(built, output)
+
+        return output
+    finally:
+        if owned_workdir:
+            shutil.rmtree(workdir, ignore_errors=True)

