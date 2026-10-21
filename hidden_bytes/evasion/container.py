@@ -7,6 +7,9 @@ An HBX1 container is laid out as::
 The JSON header carries the metadata required to recover the payload; the
 ciphertext is AES-256-GCM output; the trailing padding is random filler used
 for file-size manipulation and is ignored on read.
+
+The header may also carry a ``kdf`` section. When present, the container key
+is derived from a passphrase instead of being read from a sidecar key file.
 """
 
 from __future__ import annotations
@@ -18,9 +21,11 @@ from typing import BinaryIO
 from .constants import (
     GCM_TAG_SIZE,
     HEADER_SIZE,
+    KDF_NAME,
     MAGIC,
     MAX_HEADER_SIZE,
     NONCE_SIZE,
+    SALT_SIZE,
 )
 from .encoding import b64_decode
 
@@ -35,6 +40,32 @@ REQUIRED_FIELDS = frozenset(
     }
 )
 
+OPTIONAL_FIELDS = frozenset({"kdf"})
+
+
+def _validate_kdf(kdf: object) -> None:
+    """Validate the key-derivation metadata of a container header."""
+
+    if not isinstance(kdf, dict):
+        raise ValueError("kdf metadata must be a JSON object")
+
+    if kdf.get("name") != KDF_NAME:
+        raise ValueError(f"unsupported key derivation function: {kdf.get('name')!r}")
+
+    try:
+        iterations = int(kdf["iterations"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid kdf iteration count") from exc
+
+    if iterations < 1:
+        raise ValueError("kdf iteration count must be positive")
+
+    salt = b64_decode(kdf.get("salt", ""), "kdf salt")
+    if len(salt) != SALT_SIZE:
+        raise ValueError(
+            f"invalid kdf salt length: expected {SALT_SIZE} bytes, got {len(salt)}"
+        )
+
 
 def validate_header(header: dict) -> None:
     """Validate the metadata required by an HBX1 container."""
@@ -42,6 +73,12 @@ def validate_header(header: dict) -> None:
     if missing:
         raise ValueError(
             "container header is missing fields: " + ", ".join(sorted(missing))
+        )
+
+    unknown = header.keys() - REQUIRED_FIELDS - OPTIONAL_FIELDS
+    if unknown:
+        raise ValueError(
+            "container header has unknown fields: " + ", ".join(sorted(unknown))
         )
 
     if header["algorithm"] != "AES-256-GCM":
@@ -75,6 +112,61 @@ def validate_header(header: dict) -> None:
     if not isinstance(header["original_name"], str):
         raise ValueError("original_name must be a string")
 
+    if "kdf" in header:
+        _validate_kdf(header["kdf"])
+
+
+def _decode_header(raw_header: bytes) -> dict:
+    """Decode and validate the JSON header of a container."""
+
+    try:
+        header = json.loads(raw_header.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid JSON header") from exc
+
+    if not isinstance(header, dict):
+        raise ValueError("container header must be a JSON object")
+
+    validate_header(header)
+
+    return header
+
+
+def parse_container(data: bytes) -> tuple[dict, bytes]:
+    """Parse an HBX1 container held in memory and return ``(header, ciphertext)``."""
+
+    if len(data) < len(MAGIC) + HEADER_SIZE.size:
+        raise ValueError("invalid HBX1 container: truncated header")
+
+    if data[:len(MAGIC)] != MAGIC:
+        raise ValueError("invalid HBX1 container: incorrect magic bytes")
+
+    offset = len(MAGIC)
+    header_length = HEADER_SIZE.unpack(
+        data[offset:offset + HEADER_SIZE.size]
+    )[0]
+    offset += HEADER_SIZE.size
+
+    if header_length > MAX_HEADER_SIZE:
+        raise ValueError(f"header is too large: {header_length} bytes")
+
+    raw_header = data[offset:offset + header_length]
+    if len(raw_header) != header_length:
+        raise EOFError("unexpected end of file: truncated header")
+
+    header = _decode_header(raw_header)
+
+    offset += header_length
+    ciphertext_length = int(header["ciphertext_length"])
+    ciphertext = data[offset:offset + ciphertext_length]
+    if len(ciphertext) != ciphertext_length:
+        raise EOFError(
+            f"unexpected end of file: expected {ciphertext_length} bytes, "
+            f"received {len(ciphertext)}"
+        )
+
+    return header, ciphertext
+
 
 def _read_exact(handle: BinaryIO, size: int) -> bytes:
     """Read exactly ``size`` bytes or raise EOFError."""
@@ -107,19 +199,23 @@ def read_container(source: Path) -> tuple[dict, bytes]:
             raise ValueError(f"header is too large: {header_length} bytes")
 
         raw_header = _read_exact(handle, header_length)
-        try:
-            header = json.loads(raw_header.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("invalid JSON header") from exc
-
-        if not isinstance(header, dict):
-            raise ValueError("container header must be a JSON object")
-
-        validate_header(header)
+        header = _decode_header(raw_header)
 
         ciphertext = _read_exact(handle, int(header["ciphertext_length"]))
 
     return header, ciphertext
+
+
+def read_container_header(source: Path) -> dict:
+    """Read only the metadata header of a container or a runner."""
+
+    from .runner import is_runner, read_runner_header
+
+    if is_runner(source):
+        return read_runner_header(source)
+
+    header, _ciphertext = read_container(source)
+    return header
 
 
 def inspect_file(source: Path) -> dict:
@@ -127,6 +223,7 @@ def inspect_file(source: Path) -> dict:
     header, ciphertext = read_container(source)
 
     result = dict(header)
+    result["artifact_type"] = "container"
     result["container_magic"] = MAGIC.decode("ascii")
     result["container_ciphertext_bytes"] = len(ciphertext)
     result["container_size_bytes"] = source.stat().st_size
