@@ -112,7 +112,8 @@ def _load_payload(value: str) -> str:
 
     if BLOCKED.search(payload):
         raise ValueError(
-            "payload contains a blocked shell/process indicator"
+            "payload contains a blocked shell/process indicator "
+            "and is not permitted"
         )
 
     return payload
