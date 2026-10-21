@@ -108,6 +108,17 @@ def build_parser() -> argparse.ArgumentParser:
             "(produces a .exe on Windows). Requires --mode runner."
         ),
     )
+    parser.add_argument(
+        "--no-native",
+        action="store_true",
+        help=(
+            "do not build a native executable even when the output name ends "
+            "in .exe. Without this flag, a .exe output is packaged into a "
+            "real native program, because a script renamed to .exe is not "
+            "executable on Windows and is not analysed as a program by a "
+            "scanner."
+        ),
+    )
 
     return parser
 
@@ -186,7 +197,14 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
     passphrase, passphrase_source = _read_passphrase(args)
 
-    if args.build_exe:
+    # A file named ".exe" that is really a script does not run on Windows
+    # and is not analysed as a program by a scanner, so package a real
+    # native executable by default in that case.
+    wants_native = args.build_exe or (
+        args.output.suffix.lower() == ".exe" and not args.no_native
+    )
+
+    if wants_native:
         build_executable_from_source(
             source=args.source,
             output=args.output,

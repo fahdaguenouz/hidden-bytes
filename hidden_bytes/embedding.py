@@ -52,11 +52,16 @@ def build_executable(
     name: str,
     extra_data: Path | None = None,
     workdir: Path | None = None,
+    trailer: bytes | None = None,
 ) -> Path:
     """Package a Python script into a single native executable.
 
     Requires PyInstaller. On Windows the result is a ``.exe`` file, which is
     what the audit demonstration needs.
+
+    ``trailer`` is optional data appended after the packaged archive. The
+    PyInstaller loader finds its archive with a back-to-front scan for its
+    cookie, so trailing bytes do not affect execution.
     """
 
     if shutil.which("pyinstaller") is None and not has_pyinstaller():
@@ -114,6 +119,10 @@ def build_executable(
 
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(built, output)
+
+        if trailer:
+            with output.open("ab") as handle:
+                handle.write(trailer)
 
         return output
     finally:
