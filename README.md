@@ -156,10 +156,10 @@ The original subject discusses binary manipulation, encryption, file-size change
 ### Prerequisites
 
 - Python 3.10 or newer.
-- The packages listed in `requirements-dev.txt` (including `cryptography` and `pytest`).
+- The packages listed in `requirements-dev.txt` (including `cryptography`, `pytest` and `pefile`).
 - A terminal: PowerShell on Windows, or a shell on Linux/macOS.
 - For the subject demonstration, a dedicated Windows 10/11 virtual machine configured and inspected by the auditor.
-- Optional, only for `--build-exe`: `python -m pip install pyinstaller` inside the isolated VM.
+- Optional, only for a native `.exe` build: `python -m pip install pyinstaller` **inside the isolated VM**. The Windows bootloader ships with the Windows package, so the build must happen in the VM.
 
 ### Recommended repository layout
 
@@ -182,7 +182,12 @@ Hidden-Bytes/
 │   └── polymorphic.py       # self-modifying program generator
 ├── lab/
 │   ├── reverse_shell_payload.py   # lab payload: connects back to the operator
-│   └── listener.py                # lab listener: accepts and relays one session
+│   ├── listener.py                # lab listener: accepts and relays one session
+│   ├── vm_preflight.sh            # VM isolation and toolchain check (bash)
+│   ├── vm_preflight.ps1           # VM isolation and Defender check (Windows)
+│   ├── defender_scan.ps1          # scan an artifact with the real Defender
+│   ├── detect_surface.py          # what a scanner can see in an artifact
+│   └── vt_check.py                # VirusTotal submission and detection ratio
 ├── evasion                  # optional launcher script
 ├── polymorphic              # optional launcher script
 ├── tests/
@@ -238,6 +243,88 @@ Before any Windows demonstration, ask the auditor to verify:
 6. Evidence is saved without exposing keys or sensitive sample contents.
 
 A README cannot prove the VM is isolated. Isolation must be checked in the hypervisor settings.
+
+### Validate the VM yourself, before the audit
+
+Because you build inside the VM every day, run the preflight check at the start of your session. It reports the isolation and toolchain state and gives you a file to hand to the auditor as evidence.
+
+**Windows (native, in the VM):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File lab\vm_preflight.ps1 |
+    Tee-Object -FilePath audit\vm-preflight.txt
+```
+
+**Windows (from Git Bash or WSL):**
+
+```bash
+bash lab/vm_preflight.sh | tee audit/vm-preflight.txt
+```
+
+The check covers:
+
+| Area | What it verifies |
+|---|---|
+| Operating system | Windows 10 or 11, and a supported build number |
+| Network isolation | No default gateway, public DNS fails, outbound HTTPS blocked |
+| Python toolchain | Interpreter version, `cryptography`, `PyInstaller` |
+| Tool smoke test | Both CLIs start and the test suite collects |
+| Defender | Real-time protection on, no path exclusions, signature age, prior detections |
+
+It is read-only: it inspects and reports, and it changes no setting.
+
+Two results deserve attention:
+
+- **A public DNS or HTTPS check that passes means the VM is not isolated.** Fix the adapter mode before you demonstrate anything.
+- **Defender path exclusions matter for the audit.** If the demo folder is excluded, a local scan will not flag the artifact, and that is not evidence of anything. The preflight reports any exclusions so you and the auditor can talk about it.
+
+### What the audit's detection checks actually require
+
+Audit items 7 and 8 are **measurements, not features**. Nothing you write into the tool makes Defender miss a file; what decides the result is what the file looks like when a scanner opens it, and the only way to know is to measure it.
+
+That splits the work in two:
+
+**Part 1 — make the artifact a reasonable thing to scan.** This is code, and it is now done:
+
+- The payload is encrypted, so it does not appear in the file in cleartext.
+- The artifact is a **real PE executable**, because an output path ending in `.exe` is packaged natively by default. A Python archive renamed `.exe` does not run on Windows and no scanner analyses it as a program.
+- The size increase is exact, so the file is the size the audit asks for.
+
+**Part 2 — measure it.** This is a procedure, and the tooling is in `lab/`:
+
+```bash
+# What can a scanner see in this file? Local, read-only, nothing uploaded.
+python3 lab/detect_surface.py evaded_program.exe
+```
+
+```powershell
+# In the Windows VM: scan with the real Defender and record the verdict.
+powershell -ExecutionPolicy Bypass -File lab\defender_scan.ps1 -Path .\evaded_program.exe
+```
+
+```bash
+# Upload your own artifact to VirusTotal and read the detection ratio.
+export VT_API_KEY='your-virustotal-api-key'
+python3 lab/vt_check.py evaded_program.exe
+```
+
+`vt_check.py` prints the bypass rate the audit asks for and exits non-zero when the 60% threshold is not met. **Only upload artifacts you created yourself.** A VirusTotal sample is published to a public multi-scanner service and may be shared onward.
+
+#### What to report if the measurement fails
+
+Report the number you observed. A measured 45% bypass is a legitimate result and a good talking point; an unmeasured claim of 60% is not.
+
+The honest analysis of what drives the score:
+
+| Property | Effect on the detection ratio |
+|---|---|
+| Payload is encrypted | Removes signature matches on the payload's own bytes |
+| High-entropy region larger than the code | Heuristic engines treat a small code section plus a large random blob as a packed or encrypted payload — this is the main driver, and the 101 MB padding the subject asks for makes the file *more* conspicuous, not less |
+| File is a real PE | Required for any engine to analyse it as a program; a renamed script is not analysed at all |
+| A frozen Python runtime | A recognisable footprint in its own right |
+| The connection the payload makes | Visible on the network regardless of how the file looks |
+
+The last row is the point worth making to the auditor: **the reverse shell is what gets caught**, not the file. Encrypting, padding and randomising the artifact change the bytes on disk and nothing about the outbound connection. That is why these checks are not really about the file.
 
 ---
 
@@ -550,7 +637,7 @@ cmp simple_program.py recovered.py && echo 'Files match'
 
 ### 4.3.2 Building a real `.exe` (Windows VM)
 
-On Windows the audit expects an `.exe`, not a Python archive. The `--build-exe` option packages the launcher and the container into a single native executable with PyInstaller.
+On Windows the audit expects an `.exe`, not a Python archive. **An output path ending in `.exe` is packaged into a real native executable automatically** — no extra flag is needed, because a Python script renamed to `.exe` does not run on Windows and is not analysed as a program by a scanner.
 
 Install PyInstaller **inside the isolated VM**:
 
@@ -565,8 +652,7 @@ python -m hidden_bytes.evasion \
   --encrypt simple_program.exe \
   --output evaded_program.exe \
   --add-size 101 \
-  --delay 101 \
-  --build-exe
+  --delay 101
 ```
 
 Run it:
@@ -583,6 +669,16 @@ Two practical notes for the `.exe` build:
 
 - **The bundled Python runtime adds fixed overhead** (roughly 9–15 MB depending on the platform and interpreter). The size target therefore has to exceed that overhead; `--add-size 101` does. If you request a size that is too small, the tool reports the minimum it needs instead of failing silently.
 - **The size is exact.** The padding is appended after the packaged archive. The PyInstaller loader locates its archive with a back-to-front scan for its cookie, so trailing bytes do not affect execution. The final file is exactly `original_size + requested_size` bytes.
+
+Use `--no-native` if you deliberately want the Python-archive form under a `.exe` name (for example to show the difference to the auditor), and `--build-exe` to force a native build for an output path that does not end in `.exe`.
+
+Check what you actually produced:
+
+```bash
+python3 lab/detect_surface.py evaded_program.exe
+```
+
+This reports the real file type, the PE structure, the section entropy and the size of the high-entropy region. It reads the file only — nothing is uploaded and nothing is executed.
 
 ### 4.4 Other useful test commands
 
@@ -917,19 +1013,38 @@ Typing a command in the listener terminal now runs it in the remote shell.
 
 ### 5.7 Packaging as a native executable
 
-On Windows the audit expects a `.exe`. The `--build-exe` option packages the generated program into a single native executable with PyInstaller.
+On Windows the audit expects a `.exe`. **An output path ending in `.exe` is packaged into a real native executable automatically** — no extra flag is needed, because a Python script renamed to `.exe` does not run on Windows and is not analysed as a program by a scanner.
 
 ```bash
 python -m pip install pyinstaller
 python3 -m hidden_bytes.polymorphic \
   --generate polymorphic.exe \
-  --payload lab/reverse_shell_payload.py \
-  --build-exe
+  --payload lab/reverse_shell_payload.py
 ```
 
 The packaged executable contains the encrypted payload and the spliced AES implementation, and behaves identically to the script.
 
+**How the self-modification works in a packaged executable.** A script can rewrite its own source in place, but a running executable cannot: the file is locked on Windows and busy on Linux. The packaged executable therefore carries a small mutable region appended after its archive, and on each run it writes the next generation as a sibling file and starts that:
+
+```text
+> polymorphic.exe
+[INFO] Polymorphic signature updated successfully.
+
+> dir /b polymorphic*
+polymorphic.exe
+polymorphic.gen1.exe
+```
+
+Each generation has a different SHA-256 and identical behaviour. The chain stops after three generations, so it terminates.
+
+To compare the hashes:
+
+```powershell
+Get-FileHash polymorphic.exe, polymorphic.gen1.exe -Algorithm SHA256
+```
+
 ### 5.8 Polymorphic flow
+
 
 ```mermaid
 flowchart TD
@@ -957,7 +1072,7 @@ flowchart TD
 
 The demonstration shows **file-level variation**: the bytes of the program change on every run while the behaviour stays identical. That is the property a defender looks for when comparing samples of the same malware family — many different hashes, one behaviour.
 
-This is not machine-code mutation and not a native PE rewriter. The self-modification is a text substitution in a Python source file, which is the honest, inspectable version of the technique.
+In script form the self-modification is a text substitution in a Python source file. In packaged form it is a rewrite of the mutable region appended to the executable, which produces the next generation as a sibling file. Neither is machine-code mutation, and both are the honest, inspectable version of the technique.
 
 The payload is executed as an ordinary child process with no injection, no hollowing and no concealment, and the delay, the connection and the child process are all plainly visible to behavioural monitoring.
 
@@ -1137,7 +1252,11 @@ Use this checklist during the audit. Mark an item only after collecting evidence
 - [ ] **Stable output:** preserve output from multiple runs and show that the message stays the same.
 - [ ] **Reverse shell:** with the listener running, show the connection being accepted, the peer address, and a command executed on the far side.
 - [ ] **Safety review:** confirm the reverse shell reaches only the operator-chosen address, and that there is no persistence, no scanning and no evasion in the demonstration.
-- [ ] **Limitations:** clearly identify Defender/VT bypass as not implemented.
+- [ ] **VM isolation:** run `lab/vm_preflight.ps1` in the VM and save the output as evidence.
+- [ ] **Detection surface:** run `lab/detect_surface.py` on the artifact and save the report.
+- [ ] **Defender:** run `lab/defender_scan.ps1` and record the verdict exactly as observed.
+- [ ] **VirusTotal:** run `lab/vt_check.py` on your own artifact and record the measured ratio.
+- [ ] **Limitations:** report the measured detection result, not a claim. Identify what the result depends on.
 - [ ] **Evidence handling:** store logs/screenshots and test hashes without exposing key or passphrase contents.
 
 ### Suggested evidence directory

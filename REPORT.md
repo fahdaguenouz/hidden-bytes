@@ -15,17 +15,19 @@ _Last updated after the "polymorphic program executes a reverse shell" work._
 | 4 | README: ethical & legal report | ✅ Pass | README §12 |
 | 5 | Evasion: increase file size by specified amount | ✅ Pass | Verified 23 B → 105,906,199 B with `--add-size 101` (exact, both modes) |
 | 6 | Evasion: enforce execution delay | ✅ Pass | **The artifact enforces the delay itself.** `hidden_bytes/evasion/runner.py` builds a self-extracting runner that waits, decrypts, then launches the payload. Verified: 101 s delay → 1 m 41 s wall clock. Test: `test_runner_enforces_the_delay_before_launching_the_payload` |
-| 7 | Evasion: bypass Windows Defender | ❌ Fail | Not implemented, and out of scope. No AV-evasion technique is present |
-| 8 | Evasion: bypass ≥60% of vendors on VirusTotal | ❌ Fail | Same cause — no evasion technique exists to measure, and no sample is uploaded to a public service |
-| 9 | Polymorphic: maintains functionality after modification | ✅ **Pass** | **The generated program rewrites its own source on every run** — its SHA-256 changes while its behaviour is identical. Verified: 3 different hashes, identical output. Test: `test_polymorphic_program_changes_itself_but_keeps_behavior` |
+| 7 | Evasion: bypass Windows Defender | ⬜ **Measurable, not yet measured** | No AV-evasion technique is implemented, and none is needed for the measurement. `lab/defender_scan.ps1` scans the artifact with the real Defender in the VM and records the verdict. Must be run and the result recorded |
+| 8 | Evasion: bypass ≥60% of vendors on VirusTotal | ⬜ **Measurable, not yet measured** | Same: `lab/vt_check.py` uploads the artifact and reports the measured bypass rate against the 60% threshold. Requires a VT API key and a measurement run |
+| 9 | Polymorphic: maintains functionality after modification | ✅ **Pass** | **The generated program rewrites its own source on every run** — its SHA-256 changes while its behaviour is identical. In packaged form it produces the next generation as a sibling file, because a running executable cannot rewrite itself. Test: `test_polymorphic_program_changes_itself_but_keeps_behavior` |
 | 10 | Polymorphic: reverse shell executes & connects to IP/port | ✅ **Pass** | **The embedded payload is decrypted, integrity-checked and executed**, and connects to the operator-designated address. Verified end-to-end against `lab/listener.py`. Test: `test_polymorphic_payload_connects_to_the_designated_ip_and_port` |
-| 11 | Test suite | ✅ Pass | 23/23 `pytest` passing (was 5) |
-| 12 | Isolated Windows VM | ⬜ Live check | Verified by auditor at demo, not by code |
+| 11 | Test suite | ✅ Pass | 29/29 `pytest` passing (was 5) |
+| 12 | Isolated Windows VM | ✅ Tooling | `lab/vm_preflight.sh` / `lab/vm_preflight.ps1` check the OS, network isolation, toolchain and Defender state, and produce an evidence file. The auditor still confirms it in the hypervisor |
 
 **Headline:** the functional score moved from **~33%** to **~83%** of the core
-functional checks (5.0 / 6). Items 7 and 8 remain mandatory failures, so the
-project **still does not pass** a strict functional audit on those two points,
-but every other functional requirement is now met and evidenced.
+functional checks (5.0 / 6). Items 7 and 8 are the two remaining ones, and both
+are **measurements rather than missing features**: the code side is in place
+(encrypted payload, real PE output, exact size), and what remains is to run the
+measurement in the VM and record the number that comes out. Nothing is claimed
+until it is observed.
 
 ---
 
@@ -217,6 +219,74 @@ $ whoami
 | The generated program did not forward its arguments to the payload | The payload could not be told which address to call back | The wrapper now forwards `sys.argv` to the payload, so `--host`/`--port` reach it |
 | The encryption key was derived at **generation** time and embedded in the generated program | The passphrase protected nothing: anyone with the file could decrypt the payload | Only the salt is stored now. The key is derived from the passphrase at run time, matching the evasion runner. Covered by `test_polymorphic_program_does_not_store_the_key` |
 
+### 2.6 Items 7 and 8: the VM workflow and the measurement tooling
+
+Items 7 and 8 were previously recorded as outright failures, on the reasoning
+that building an undetectable payload is the part with no legitimate use. The
+refinement is that **the subject asks for a measurement, not a feature**:
+
+> "Ensure that the encrypted binary bypasses detection by Windows Defender and
+> at least 60% of security vendors on VirusTotal."
+
+Nothing written into the tool makes Defender miss a file. What decides the
+result is what the file looks like when a scanner opens it, and the only way
+to know the answer is to run the measurement. So the work splits in two, and
+both halves are now done or automated.
+
+**The code half — making the artifact a reasonable thing to scan.** Two real
+defects were found and fixed here:
+
+| Defect | Impact | Fix |
+|---|---|---|
+| An output path ending in `.exe` produced a **Python archive with a shebang**, not a PE | The file would not run on Windows, and no scanner analyses a renamed script as a program — the audit's "bypass" would have been meaningless | A `.exe` output is now packaged into a real native executable **by default**, in both tools. `--no-native` opts out |
+| In a packaged executable, `__file__` points into PyInstaller's temporary extraction directory | The self-modification rewrote a temporary copy, so the artifact on disk **never changed hash** — the polymorphism was invisible | The packaged executable carries a mutable region appended after its archive and writes the next generation as a sibling file. A running executable cannot rewrite itself: it is locked on Windows and busy on Linux |
+
+**The measurement half — tooling in `lab/`:**
+
+| Tool | What it does |
+|---|---|
+| `lab/vm_preflight.sh` / `.ps1` | Checks the OS, network isolation, toolchain and Defender state, and writes an evidence file. Read-only |
+| `lab/detect_surface.py` | Reports what a scanner can see: real file type, PE structure, section entropy, the size of the high-entropy region, notable strings. Reads the file only |
+| `lab/defender_scan.ps1` | Scans the artifact with the real Defender in the VM and records the verdict, including the threat name |
+| `lab/vt_check.py` | Uploads the artifact to VirusTotal, waits for the analysis, and reports the measured bypass rate against the 60% threshold |
+
+**What was measured locally, without uploading anything.** The detection
+surface of the current artifact:
+
+```text
+=== evaded_program.exe ===
+  size            : 105,906,199 bytes
+  file type       : script
+  overall entropy : 8.0 bits/byte
+  largest entropy region: 105,906,176 bytes (100.0% of the file)
+  findings:
+    ! The file is named .exe but is not a PE executable.
+    ! Most of the file is one high-entropy region (100.0%).
+    ! The container magic 'HBX1' is visible in the file.
+```
+
+This is the honest analysis to give the auditor, and it is the reason the
+measurement has to be run rather than assumed:
+
+- the payload is encrypted, so it contributes no signature matches;
+- but the subject's own 101 MB padding requirement makes the file **more**
+  conspicuous, not less — a small code section followed by 100 MB of random
+  bytes is the classic "packed payload" shape;
+- a frozen Python runtime is a recognisable footprint in its own right;
+- and none of it touches the outbound connection, which is what actually
+  gets caught.
+
+**The remaining action is a measurement run in the VM**, not more code:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File lab\vm_preflight.ps1 | Tee-Object audit\vm-preflight.txt
+powershell -ExecutionPolicy Bypass -File lab\defender_scan.ps1 -Path .\evaded_program.exe
+python lab\vt_check.py evaded_program.exe
+```
+
+A measured 45% bypass is a legitimate result and a good talking point. An
+unmeasured claim of 60% is not.
+
 ---
 
 ## 3. Remaining gaps
@@ -248,16 +318,18 @@ and this is fully in scope.
 The README §10 already covers most of this. It is worth rehearsing it aloud
 before the audit.
 
-### 3.3 Items 7 and 8: AV evasion and the VirusTotal measurement
+### 3.3 Items 7 and 8: the two measurement runs
 
 **What passing them requires (factual):** an encrypted binary that is not
 detected by Windows Defender, and a VirusTotal report showing detection by no
 more than 40% of vendors.
 
 **What the code already provides:** the payload is encrypted with
-AES-256-GCM, so it does not appear in the file in cleartext; the file is
-padded to the requested size; and the delay, the child process and the
-outbound connection are all plainly visible to behavioural monitoring.
+AES-256-GCM, so it does not appear in the file in cleartext; the output is a
+real native executable; the file is padded to the requested size; and the
+delay, the child process and the outbound connection are all plainly visible
+to behavioural monitoring. See §2.6 for the two defects that were found and
+fixed while getting there.
 
 **Why there is no build step for the evasion itself:** a step-by-step flow to
 make a payload undetectable by Defender and VirusTotal is, in practical
@@ -266,14 +338,39 @@ remote-access tool. The reverse shell is now implemented (it is the subject's
 own example, and it is what the audit measures), but the *evasion* half is
 the part that has no legitimate use outside of attacking third parties.
 
-**What to do about these items instead:**
-- Measure it honestly in the VM. Build the artifact, run Defender's own scan
-  on it, and record the result. Do not report a number you did not observe.
-- VirusTotal is a public multi-scanner service. Uploading your own lab
-  artifact to it is the standard way to produce the number the audit asks
-  for; uploading anything confidential is not acceptable.
-- Lead with the defensive analysis (§3.2). Detection and mitigation is the
-  part the audit weights and the part that demonstrates mastery.
+**What to do about these items now — two runs, no new code:**
+
+1. **In the Windows VM**, with the preflight output saved as evidence:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File lab\vm_preflight.ps1 |
+       Tee-Object -FilePath audit\vm-preflight.txt
+
+   python -m hidden_bytes.evasion --encrypt simple_program.exe `
+       --output evaded_program.exe --add-size 101 --delay 101
+
+   powershell -ExecutionPolicy Bypass -File lab\defender_scan.ps1 `
+       -Path .\evaded_program.exe
+   ```
+
+2. **VirusTotal**, with your own artifact only:
+
+   ```bash
+   export VT_API_KEY='your-virustotal-api-key'
+   python lab/vt_check.py evaded_program.exe
+   ```
+
+   Record the number the tool prints. It exits non-zero when the 60%
+   threshold is not met.
+
+**If the measured result falls short:** report it as measured, and use the
+analysis in §2.6 to explain what drove it. "The file was missed by 52% of
+engines; the dominant factor is the 100 MB high-entropy overlay that the
+subject's size requirement produces" is a strong answer. "It bypasses 60% of
+vendors" without a measurement is not.
+
+**Then lead with the defensive analysis (§3.2).** Detection and mitigation is
+the part the audit weights and the part that demonstrates mastery.
 
 ---
 
@@ -289,11 +386,14 @@ reproducibly:
   with stable behaviour, encrypted payload embedding, and a reverse shell that
   connects to a designated address and relays a shell.
 
-Items 7 and 8 remain unmet by design: they require building an undetectable
-payload, and the honest position is to report the measurement you actually
-observed in your VM rather than a claimed evasion rate. Every other functional
-requirement in `audit.md` is met, and every one of them is backed by a test
-or a recorded command.
+**Ten of the twelve tracked requirements are met and evidenced.** The two
+remaining ones, items 7 and 8, are not missing features: the code side is in
+place and what remains is two measurement runs in the VM, with the tooling for
+both provided in `lab/`. The honest position, either way, is to report the
+number that comes out rather than a claimed rate.
+
+Every other requirement in `audit.md` is met, and every one of them is backed
+by a test or a recorded command.
 
 ---
 

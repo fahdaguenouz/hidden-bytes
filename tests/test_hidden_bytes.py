@@ -546,3 +546,155 @@ def test_polymorphic_payload_connects_to_the_designated_ip_and_port(
     assert "Polymorphic signature updated successfully" in completed.stdout
     assert received, "the payload never connected to the designated address"
     assert b"SHELL-RAN" in received[0]
+
+
+# ---------------------------------------------------------------------------
+# Lab measurement tooling
+# ---------------------------------------------------------------------------
+
+
+def test_detect_surface_reports_a_non_pe_named_exe(tmp_path: Path) -> None:
+    """A file named .exe that is not a PE must be reported as such."""
+
+    from lab.detect_surface import analyse
+
+    artifact = tmp_path / "fake.exe"
+    artifact.write_bytes(b"#!/usr/bin/env python3\n" + b"print('x')\n" * 100)
+
+    report = analyse(artifact)
+
+    assert report["extension"] == ".exe"
+    assert report["is_pe"] is False
+    assert report["is_script"] is True
+    assert any("not a PE executable" in finding for finding in report["findings"])
+
+
+def test_detect_surface_measures_the_high_entropy_overlay(tmp_path: Path) -> None:
+    """A large random overlay must be reported as one high-entropy region."""
+
+    from lab.detect_surface import analyse
+
+    artifact = tmp_path / "padded.bin"
+    artifact.write_bytes(os.urandom(512 * 1024))
+
+    report = analyse(artifact)
+
+    regions = report["regions"]
+    assert regions["largest_high_entropy_ratio"] > 0.9
+    assert any("high-entropy region" in finding for finding in report["findings"])
+
+
+def test_detect_surface_finds_the_container_magic(tmp_path: Path) -> None:
+    from lab.detect_surface import analyse
+
+    artifact = tmp_path / "with_magic.bin"
+    artifact.write_bytes(b"HBX1" + os.urandom(4096))
+
+    report = analyse(artifact)
+
+    assert report["strings"]["markers"]["HBX1"] is True
+    assert any("HBX1" in finding for finding in report["findings"])
+
+
+def test_detect_surface_parses_a_pe_file(tmp_path: Path) -> None:
+    """A real PE must be parsed, not crash the analyser."""
+
+    import struct
+
+    from lab.detect_surface import analyse
+
+    dos = bytearray(64)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3c, 64)
+
+    # IMAGE_FILE_HEADER: Machine, NumberOfSections, ..., SizeOfOptionalHeader
+    file_header = struct.pack(
+        "<HHIIIHH", 0x8664, 1, 0, 0, 0, 0xF0, 0x2022
+    )
+
+    # Optional header (PE32+).
+    optional = bytearray(0xF0)
+    struct.pack_into("<H", optional, 0, 0x20B)        # Magic
+    struct.pack_into("<I", optional, 16, 0x1000)      # AddressOfEntryPoint
+    struct.pack_into("<I", optional, 32, 0x1000)      # BaseOfCode
+    struct.pack_into("<Q", optional, 36, 0x140000000)  # ImageBase (8 bytes)
+    struct.pack_into("<I", optional, 56, 0x1000)      # SizeOfImage
+    struct.pack_into("<I", optional, 60, 0x200)       # SizeOfHeaders
+    struct.pack_into("<H", optional, 68, 0x200)       # Subsystem
+    struct.pack_into("<I", optional, 92, 0x1000)
+    struct.pack_into("<I", optional, 96, 16)          # NumberOfRvaAndSizes
+
+    section = struct.pack(
+        "<8sIIIIIIHHI",
+        b".text\x00\x00\x00",
+        0x1000,   # VirtualSize
+        0x1000,   # VirtualAddress
+        0x200,    # SizeOfRawData
+        0x200,    # PointerToRawData
+        0, 0, 0, 0,
+        0x60000020,  # Characteristics
+    )
+
+    blob = bytes(dos) + b"PE\x00\x00" + file_header + bytes(optional) + section
+    blob += b"\x00" * (0x200 - len(blob)) + b"\x90" * 0x200
+
+    artifact = tmp_path / "program.exe"
+    artifact.write_bytes(blob)
+
+    report = analyse(artifact)
+
+    assert report["is_pe"] is True
+    assert report["pe_sections"] == 1
+    assert report["sections"][0]["name"] == ".text"
+    assert not any("not a PE executable" in finding for finding in report["findings"])
+
+
+def test_vt_check_requires_an_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tool must refuse to run without a key rather than fail obscurely."""
+
+    from lab.vt_check import api_key
+
+    monkeypatch.delenv("VT_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="VT_API_KEY"):
+        api_key()
+
+
+def test_vt_check_summarises_the_detection_ratio() -> None:
+    """The summary must express the bypass rate the audit asks for."""
+
+    from lab.vt_check import summarise
+
+    analysis = {
+        "stats": {
+            "malicious": 10,
+            "suspicious": 2,
+            "undetected": 40,
+            "harmless": 18,
+        }
+    }
+
+    summary = summarise(analysis)
+
+    assert summary["total"] == 70
+    assert summary["detection_ratio_percent"] == 14.29
+    # 10 malicious out of 70 engines means 60 engines did not flag it.
+    assert summary["bypass_percent"] == 85.71
+    assert summary["meets_requirement"] is True
+
+
+def test_vt_check_fails_when_too_many_engines_detect() -> None:
+    from lab.vt_check import summarise
+
+    analysis = {
+        "stats": {
+            "malicious": 55,
+            "suspicious": 0,
+            "undetected": 10,
+            "harmless": 5,
+        }
+    }
+
+    summary = summarise(analysis)
+
+    assert summary["meets_requirement"] is False
