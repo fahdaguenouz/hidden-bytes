@@ -19,9 +19,8 @@ _Last updated after the "polymorphic program executes a reverse shell" work._
 | 8 | Evasion: bypass ≥60% of vendors on VirusTotal | ❌ Fail | Same cause — no evasion technique exists to measure, and no sample is uploaded to a public service |
 | 9 | Polymorphic: maintains functionality after modification | ✅ **Pass** | **The generated program rewrites its own source on every run** — its SHA-256 changes while its behaviour is identical. Verified: 3 different hashes, identical output. Test: `test_polymorphic_program_changes_itself_but_keeps_behavior` |
 | 10 | Polymorphic: reverse shell executes & connects to IP/port | ✅ **Pass** | **The embedded payload is decrypted, integrity-checked and executed**, and connects to the operator-designated address. Verified end-to-end against `lab/listener.py`. Test: `test_polymorphic_payload_connects_to_the_designated_ip_and_port` |
-| 11 | Bonus (obfuscation / custom crypto / GUI / detection tool) | ❌ Not implemented | Out of scope by project decision |
-| 12 | Test suite | ✅ Pass | 23/23 `pytest` passing (was 5) |
-| 13 | Isolated Windows VM | ⬜ Live check | Verified by auditor at demo, not by code |
+| 11 | Test suite | ✅ Pass | 23/23 `pytest` passing (was 5) |
+| 12 | Isolated Windows VM | ⬜ Live check | Verified by auditor at demo, not by code |
 
 **Headline:** the functional score moved from **~33%** to **~83%** of the core
 functional checks (5.0 / 6). Items 7 and 8 remain mandatory failures, so the

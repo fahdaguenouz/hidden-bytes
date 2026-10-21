@@ -51,7 +51,6 @@ The `evasion` name is retained because it comes from the assignment. The impleme
 - A claimed Defender or VirusTotal detection-bypass percentage.
 - Persistence, privilege escalation, stealthy process injection, or anti-analysis tricks.
 - Any automatic target discovery, scanning, or spreading.
-- The optional bonus features from the original subject.
 
 These exclusions are part of the scope, not unfinished features to silently assume are present.
 
@@ -145,7 +144,6 @@ The original subject discusses binary manipulation, encryption, file-size change
 | Native Windows PE output | Produced by `--build-exe` (PyInstaller) inside the VM | A `.py` file or `.exe` filename does not by itself establish PE validity; check the file type |
 | Defender / VirusTotal bypass | Not implemented or claimed | Record this as out of scope; do not report an unmeasured bypass rate |
 | Isolated Windows VM | Must be verified manually by the auditor | Capture hypervisor network and integration settings |
-| Bonus features | None implemented | Mark as not implemented |
 
 **Important audit wording:** the delay is enforced by the **artifact itself** in runner mode — the produced file waits, then decrypts and launches the payload. The tool does not need to be running for the wait to happen. The delay is a *pre-execution* delay: the payload has not started yet when the wait ends.
 
@@ -1208,9 +1206,8 @@ Recommended controls include application control/allowlisting, least privilege, 
 6. **Passphrase strength is the user's responsibility:** PBKDF2 with 200,000 iterations is reasonable for a lab exercise, but a weak passphrase still makes the payload recoverable. The salt and iteration count are in cleartext metadata, by design.
 7. **The `--build-exe` output has a fixed runtime overhead:** the bundled Python interpreter adds roughly 9–15 MB, so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
 8. **Manual isolation verification:** source code and README instructions cannot prove the VM is isolated.
-9. **Bonus requirements:** anti-debugging, stealth memory execution, custom encryption, a GUI, and a detection tool are not implemented.
-10. **Audit results must be measured:** do not claim a detection percentage or a pass without recorded, reproducible evidence.
-11. **The `--build-exe` option needs PyInstaller:** it requires `python -m pip install pyinstaller` inside the isolated VM. The pure-Python modes have no such requirement.
+9. **Audit results must be measured:** do not claim a detection percentage or a pass without recorded, reproducible evidence.
+10. **The `--build-exe` option needs PyInstaller:** it requires `python -m pip install pyinstaller` inside the isolated VM. The pure-Python modes have no such requirement.
 
 ---
 
