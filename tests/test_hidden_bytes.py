@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from hidden_bytes.evasion import (
+from src.evasion import (
     MIB,
     build_runner_file,
     decrypt_file,
@@ -20,9 +20,9 @@ from hidden_bytes.evasion import (
     is_runner,
     read_runner_container,
 )
-from hidden_bytes.evasion.crypto import build_payload
-from hidden_bytes.evasion.pure_aes import decrypt_gcm
-from hidden_bytes.polymorphic import generate
+from src.evasion.crypto import build_payload
+from src.evasion.pure_aes import decrypt_gcm
+from src.polymorphic import generate
 
 
 def test_encryption_padding_metadata_and_round_trip(tmp_path: Path) -> None:
@@ -169,7 +169,7 @@ def test_pure_aes_gcm_rejects_tampering() -> None:
 def test_pure_aes_gcm_encrypt_matches_the_cryptography_library() -> None:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-    from hidden_bytes.evasion.pure_aes import encrypt_gcm
+    from src.evasion.pure_aes import encrypt_gcm
 
     key = os.urandom(32)
     nonce = os.urandom(12)
