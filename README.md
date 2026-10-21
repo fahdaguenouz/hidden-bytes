@@ -164,8 +164,18 @@ The original subject discusses binary manipulation, encryption, file-size change
 Hidden-Bytes/
 ├── hidden_bytes/
 │   ├── __init__.py
-│   ├── evasion.py
+│   ├── evasion/             # HBX1 packaging tool (package)
+│   │   ├── __init__.py      # public API re-exports
+│   │   ├── __main__.py      # enables `python -m hidden_bytes.evasion`
+│   │   ├── constants.py
+│   │   ├── encoding.py
+│   │   ├── args.py
+│   │   ├── container.py
+│   │   ├── crypto.py
+│   │   └── cli.py
 │   └── polymorphic.py
+├── evasion                  # optional launcher script
+├── polymorphic              # optional launcher script
 ├── tests/
 ├── requirements.txt
 ├── requirements-dev.txt
@@ -173,7 +183,8 @@ Hidden-Bytes/
 └── output/                  # generated examples; optional
 ```
 
-The precise test filenames may differ in your checkout. Run the test command shown below from the project root.
+The precise test filenames may differ in your checkout. Run every command below
+from the **project root** so that the `hidden_bytes` package is importable.
 
 ### Windows PowerShell
 
