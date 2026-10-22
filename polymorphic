@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from hidden_bytes.polymorphic import main
+from src.polymorphic import main
 
 raise SystemExit(main())
 

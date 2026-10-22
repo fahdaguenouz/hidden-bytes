@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from hidden_bytes.evasion import main
+from src.evasion import main
 
 raise SystemExit(main())
 

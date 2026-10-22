@@ -360,7 +360,7 @@ def test_decrypt_uses_the_passphrase_source_recorded_in_the_container(
         [
             sys.executable,
             "-m",
-            "hidden_bytes.evasion.cli",
+            "src.evasion.cli",
             "--decrypt",
             str(runner),
             "--output",
@@ -451,7 +451,7 @@ def test_cli_encrypt_then_run_round_trip(tmp_path: Path) -> None:
         [
             sys.executable,
             "-m",
-            "hidden_bytes.evasion.cli",
+            "src.evasion.cli",
             "--encrypt",
             str(source),
             "--output",
