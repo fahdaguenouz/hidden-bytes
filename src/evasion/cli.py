@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import os
 import sys
 from pathlib import Path
 
-from .args import positive_number
+from ..common import DEFAULT_PASSPHRASE_ENV, add_common_args, build_passphrase_source, positive_number, read_passphrase, resolve_passphrase_for_decrypt
 from .container import inspect_file, read_container_header
 from .crypto import decrypt_file, encrypt_file
 from .runner import (
@@ -83,18 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="AES key file used with --decrypt (generated automatically on encrypt)",
     )
-    parser.add_argument(
-        "--passphrase",
-        help=(
-            "passphrase protecting the container. The key is derived with "
-            "PBKDF2-HMAC-SHA256. Prompted for when omitted."
-        ),
-    )
-    parser.add_argument(
-        "--passphrase-file",
-        type=Path,
-        help="read the passphrase from the first line of this file",
-    )
+    add_common_args(parser)
     parser.add_argument(
         "--no-delay",
         action="store_true",
@@ -123,40 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_passphrase(args: argparse.Namespace) -> tuple[str, dict]:
-    """Resolve the passphrase and describe where the runner can find it.
-
-    The returned source dictionary is stored in the container header so the
-    generated runner can retrieve the passphrase the same way, without the
-    user having to type it again.
-    """
-
-    if args.passphrase is not None:
-        return args.passphrase, {}
-
-    if args.passphrase_file is not None:
-        if not args.passphrase_file.is_file():
-            raise ValueError(
-                f"passphrase file does not exist: {args.passphrase_file}"
-            )
-        passphrase = args.passphrase_file.read_text(
-            encoding="utf-8"
-        ).splitlines()[0]
-        return passphrase, {"file": str(args.passphrase_file.resolve())}
-
-    environment = os.environ.get("HBX_PASSPHRASE")
-    if environment:
-        return environment, {"env": "HBX_PASSPHRASE"}
-
-    if not sys.stdin.isatty():
-        raise ValueError(
-            "no passphrase available: use --passphrase, --passphrase-file or "
-            "set the HBX_PASSPHRASE environment variable"
-        )
-
-    return getpass.getpass("Passphrase: "), {"env": "HBX_PASSPHRASE"}
-
-
 def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if args.output is None:
         parser.error("--output is required with --encrypt")
@@ -166,19 +120,21 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
     original_size = args.source.stat().st_size
 
-    if args.mode == "container":
-        passphrase = None
-        passphrase_source: dict = {}
-        if args.passphrase or args.passphrase_file:
-            passphrase, passphrase_source = _read_passphrase(args)
+    passphrase = None
+    passphrase_source: dict = {}
+    if args.passphrase or args.passphrase_file:
+        passphrase, passphrase_source = read_passphrase(args.passphrase, args.passphrase_file)
+    else:
+        passphrase_source = build_passphrase_source(None, None)
 
+    if args.mode == "container":
         key_path = encrypt_file(
             source=args.source,
             output=args.output,
             add_size_mb=args.add_size,
             delay=args.delay,
             passphrase=passphrase,
-            passphrase_source=passphrase_source,
+            passphrase_source=passphrase_source if passphrase else None,
         )
 
         final_size = args.output.stat().st_size
@@ -194,8 +150,6 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
         print(f"[INFO] Delay:       {args.delay:g} second(s)")
         print("[INFO] The container is data only; nothing is executed.")
         return 0
-
-    passphrase, passphrase_source = _read_passphrase(args)
 
     # A file named ".exe" that is really a script does not run on Windows
     # and is not analysed as a program by a scanner, so package a real
@@ -250,13 +204,16 @@ def _run_decrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     if args.output is None:
         parser.error("--output is required with --decrypt")
 
-    passphrase = None
-    if args.passphrase or args.passphrase_file or os.environ.get("HBX_PASSPHRASE"):
-        passphrase, _ = _read_passphrase(args)
-    else:
-        # Fall back to the source recorded in the container metadata, so a
-        # runner can be recovered with the same passphrase it was built with.
-        passphrase = _passphrase_from_metadata(args.source)
+    try:
+        header = read_container_header(args.source)
+    except (OSError, ValueError, EOFError):
+        header = {}
+
+    passphrase = resolve_passphrase_for_decrypt(
+        header,
+        args.passphrase,
+        args.passphrase_file,
+    )
 
     decrypt_file(
         source=args.source,
@@ -270,38 +227,6 @@ def _run_decrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     print(f"[INFO] Recovered file: {args.output}")
     print("[INFO] The recovered file was written to disk but was NOT executed.")
     return 0
-
-
-def _passphrase_from_metadata(source: Path) -> str | None:
-    """Read the passphrase from the source recorded in the container header."""
-
-    try:
-        header = read_container_header(source)
-    except (OSError, ValueError, EOFError):
-        return None
-
-    kdf = header.get("kdf")
-    if not isinstance(kdf, dict):
-        return None
-
-    env_name = kdf.get("env")
-    if env_name:
-        value = os.environ.get(env_name)
-        if value:
-            return value
-
-    file_name = kdf.get("file")
-    if file_name:
-        try:
-            passphrase = Path(file_name).read_text(
-                encoding="utf-8"
-            ).splitlines()[0]
-        except (OSError, IndexError):
-            return None
-        if passphrase:
-            return passphrase
-
-    return None
 
 
 def _run_inspect(args: argparse.Namespace) -> int:

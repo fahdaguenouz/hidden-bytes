@@ -29,9 +29,9 @@ from .constants import (
     NONCE_SIZE,
     SALT_SIZE,
 )
+from ..common import derive_key
 from .container import read_container
 from .encoding import b64_decode, b64_encode
-from .pure_aes import derive_key
 
 
 def build_payload(

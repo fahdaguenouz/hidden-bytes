@@ -26,13 +26,19 @@ import secrets
 import sys
 from pathlib import Path
 
+from .common import (
+    DEFAULT_PASSPHRASE_ENV,
+    KDF_ITERATIONS,
+    KEY_SIZE,
+    NONCE_SIZE,
+    SALT_SIZE,
+    add_common_args,
+    build_passphrase_source,
+    read_passphrase,
+)
 from .embedding import build_executable, pure_aes_source
 
 MAX_PAYLOAD = 64 * 1024
-NONCE_BYTES = 12
-KEY_BYTES = 32
-SALT_BYTES = 16
-KDF_ITERATIONS = 200_000
 
 # The name of the variable that holds the self-modification token in the
 # generated source. The token's value changes on every run, which changes
@@ -295,22 +301,22 @@ def _build_source(
             "a passphrase is required to protect the embedded payload"
         )
 
-    salt = os.urandom(SALT_BYTES)
+    salt = os.urandom(SALT_SIZE)
     key = hashlib.pbkdf2_hmac(
         "sha256",
         passphrase.encode("utf-8"),
         salt,
         KDF_ITERATIONS,
-        dklen=KEY_BYTES,
+        dklen=KEY_SIZE,
     )
-    nonce = os.urandom(NONCE_BYTES)
+    nonce = os.urandom(NONCE_SIZE)
 
     ciphertext = _encrypt(key, nonce, payload)
 
     mutation_token = secrets.token_hex(16)
     new_mutation_token = secrets.token_hex(16)
 
-    env_name = "HBX_PASSPHRASE"
+    env_name = DEFAULT_PASSPHRASE_ENV
     if passphrase_source:
         env_name = passphrase_source.get("env", env_name)
 
@@ -339,8 +345,6 @@ def _build_source(
         repr(f'{MUTATION_VARIABLE} = "{new_mutation_token}"'),
         1,
     )
-
-    return source
 
     return source
 
@@ -420,19 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the payload file to embed",
     )
 
-    parser.add_argument(
-        "--passphrase",
-        help=(
-            "passphrase protecting the embedded payload. The key is derived "
-            "with PBKDF2-HMAC-SHA256. Prompted for when omitted."
-        ),
-    )
-
-    parser.add_argument(
-        "--passphrase-file",
-        type=Path,
-        help="read the passphrase from the first line of this file",
-    )
+    add_common_args(parser)
 
     parser.add_argument(
         "--build-exe",
@@ -457,43 +449,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_passphrase(args: argparse.Namespace) -> tuple[str, dict]:
-    """Resolve the passphrase and describe where it can be found again."""
-
-    if args.passphrase is not None:
-        return args.passphrase, {}
-
-    if args.passphrase_file is not None:
-        if not args.passphrase_file.is_file():
-            raise ValueError(
-                f"passphrase file does not exist: {args.passphrase_file}"
-            )
-        passphrase = args.passphrase_file.read_text(
-            encoding="utf-8"
-        ).splitlines()[0]
-        return passphrase, {"file": str(args.passphrase_file.resolve())}
-
-    environment = os.environ.get("HBX_PASSPHRASE")
-    if environment:
-        return environment, {"env": "HBX_PASSPHRASE"}
-
-    if not sys.stdin.isatty():
-        raise ValueError(
-            "no passphrase available: use --passphrase, --passphrase-file or "
-            "set the HBX_PASSPHRASE environment variable"
-        )
-
-    import getpass
-
-    return getpass.getpass("Passphrase: "), {"env": "HBX_PASSPHRASE"}
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
-        passphrase, passphrase_source = _read_passphrase(args)
+        passphrase, passphrase_source = read_passphrase(args.passphrase, args.passphrase_file)
 
         output = Path(args.generate)
 
