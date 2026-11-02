@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
-from ..common import DEFAULT_PASSPHRASE_ENV, add_common_args, build_passphrase_source, positive_number, read_passphrase, resolve_passphrase_for_decrypt
+from ..common import  add_common_args, build_passphrase_source, positive_number, read_passphrase, resolve_passphrase_for_decrypt
 from .container import inspect_file, read_container_header
 from .crypto import decrypt_file, encrypt_file
 from .runner import (

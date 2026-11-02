@@ -749,6 +749,15 @@ The container is a custom **data format**, not a Windows PE executable.
 | fills remaining bytes to target size    |
 +-----------------------------------------+
 ```
+MAGIC: Identifies the file as an HBX1 container.
+
+HEADER LENGTH: Tells the program how many bytes to read for the JSON metadata.
+
+JSON HEADER: Contains information such as the original filename, original size, encryption algorithm, nonce, and KDF settings.
+
+CIPHERTEXT: Contains the encrypted payload.
+
+PADDING: Additional bytes that are ignored when reading the encrypted content.
 
 The `ciphertext_length` metadata field identifies the encrypted section's length, including the GCM authentication tag. The recovery code uses this length to avoid treating padding as ciphertext.
 

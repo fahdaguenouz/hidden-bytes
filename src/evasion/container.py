@@ -137,8 +137,8 @@ def parse_container(data: bytes) -> tuple[dict, bytes]:
 
     if len(data) < len(MAGIC) + HEADER_SIZE.size:
         raise ValueError("invalid HBX1 container: truncated header")
-
-    if data[:len(MAGIC)] != MAGIC:
+    
+    if data[:len(MAGIC)] != MAGIC:   
         raise ValueError("invalid HBX1 container: incorrect magic bytes")
 
     offset = len(MAGIC)

@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+import argparse
 
 KDF_NAME = "PBKDF2-HMAC-SHA256"
 KDF_ITERATIONS = 200_000
@@ -97,7 +98,7 @@ def positive_number(value: str) -> float:
     return num
 
 
-import argparse
+
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
