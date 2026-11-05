@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import BinaryIO
+import math
 
 from .constants import (
     GCM_TAG_SIZE,
@@ -26,6 +27,8 @@ from .constants import (
     MAX_HEADER_SIZE,
     NONCE_SIZE,
     SALT_SIZE,
+    MAX_KDF_ITERATIONS,
+    MAX_DELAY_SECONDS,
 )
 from .encoding import b64_decode
 
@@ -52,13 +55,16 @@ def _validate_kdf(kdf: object) -> None:
     if kdf.get("name") != KDF_NAME:
         raise ValueError(f"unsupported key derivation function: {kdf.get('name')!r}")
 
-    try:
-        iterations = int(kdf["iterations"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("invalid kdf iteration count") from exc
+    
+    iterations = kdf.get("iterations")
+    
+    if type(iterations) is not int:
+        raise ValueError("kdf iteration count must be an integer")
 
-    if iterations < 1:
-        raise ValueError("kdf iteration count must be positive")
+    if not 1 <= iterations <= MAX_KDF_ITERATIONS:
+        raise ValueError(
+            f"kdf iteration count must be between 1 and {MAX_KDF_ITERATIONS}"
+        )
 
     salt = b64_decode(kdf.get("salt", ""), "kdf salt")
     if len(salt) != SALT_SIZE:
@@ -87,9 +93,18 @@ def validate_header(header: dict) -> None:
         )
 
     try:
-        ciphertext_length = int(header["ciphertext_length"])
-        original_size = int(header["original_size"])
-        delay_seconds = float(header["delay_seconds"])
+        ciphertext_length = header["ciphertext_length"]
+        original_size = header["original_size"]
+        delay_seconds = header["delay_seconds"]
+        
+        if type(ciphertext_length) is not int:
+             raise ValueError("ciphertext_length must be an integer")
+
+        if type(original_size) is not int:
+            raise ValueError("original_size must be an integer")
+
+        if type(delay_seconds) not in (int, float):
+            raise ValueError("delay_seconds must be a number")
     except (TypeError, ValueError) as exc:
         raise ValueError("invalid numeric value in container header") from exc
 
@@ -99,8 +114,17 @@ def validate_header(header: dict) -> None:
         )
     if original_size < 0:
         raise ValueError("original_size cannot be negative")
+    
     if delay_seconds < 0:
         raise ValueError("delay_seconds cannot be negative")
+    
+    if delay_seconds > MAX_DELAY_SECONDS:
+        raise ValueError(
+            f"delay_seconds cannot exceed {MAX_DELAY_SECONDS} seconds"
+        )
+    
+    if not math.isfinite(delay_seconds):
+        raise ValueError("delay_seconds must be finite")
 
     nonce = b64_decode(header["nonce"], "nonce")
     if len(nonce) != NONCE_SIZE:
@@ -157,7 +181,7 @@ def parse_container(data: bytes) -> tuple[dict, bytes]:
     header = _decode_header(raw_header)
 
     offset += header_length
-    ciphertext_length = int(header["ciphertext_length"])
+    ciphertext_length = header["ciphertext_length"]
     ciphertext = data[offset:offset + ciphertext_length]
     if len(ciphertext) != ciphertext_length:
         raise EOFError(
@@ -201,30 +225,43 @@ def read_container(source: Path) -> tuple[dict, bytes]:
         raw_header = _read_exact(handle, header_length)
         header = _decode_header(raw_header)
 
-        ciphertext = _read_exact(handle, int(header["ciphertext_length"]))
+        ciphertext = _read_exact(handle, header["ciphertext_length"])
 
     return header, ciphertext
 
 
 def read_container_header(source: Path) -> dict:
-    """Read only the metadata header of a container or a runner."""
-
     from .runner import is_runner, read_runner_header
 
     if is_runner(source):
         return read_runner_header(source)
 
-    header, _ciphertext = read_container(source)
-    return header
+    if not source.is_file():
+        raise ValueError(f"input file does not exist: {source}")
+
+    with source.open("rb") as handle:
+        if _read_exact(handle, len(MAGIC)) != MAGIC:
+            raise ValueError("invalid HBX1 container: incorrect magic bytes")
+
+        header_length = HEADER_SIZE.unpack(
+            _read_exact(handle, HEADER_SIZE.size)
+        )[0]
+
+        if header_length > MAX_HEADER_SIZE:
+            raise ValueError(f"header is too large: {header_length} bytes")
+
+        raw_header = _read_exact(handle, header_length)
+
+    return _decode_header(raw_header)
 
 
 def inspect_file(source: Path) -> dict:
-    """Return HBX1 metadata without decrypting the payload."""
-    header, ciphertext = read_container(source)
+    header = read_container_header(source)
 
     result = dict(header)
     result["artifact_type"] = "container"
     result["container_magic"] = MAGIC.decode("ascii")
-    result["container_ciphertext_bytes"] = len(ciphertext)
+    result["container_ciphertext_bytes"] = header["ciphertext_length"]
     result["container_size_bytes"] = source.stat().st_size
+
     return result
