@@ -115,27 +115,56 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
     original_size = args.source.stat().st_size
 
-    key_path = encrypt_file(
-        source=args.source,
-        output=args.output,
-        add_size_mb=args.add_size,
-        delay=args.delay,
-    )
+    if args.build_exe or (
+        args.output.suffix.lower() == ".exe" and not args.no_native
+    ):
+        # Package a self-extracting native executable with PyInstaller.
+        # This produces a real .exe on Windows, which is what the audit
+        # expects. Requires --mode runner.
+        if args.mode != "runner":
+            parser.error("--build-exe requires --mode runner")
+        plan = build_executable_from_source(
+            source=args.source,
+            output=args.output,
+            add_size_mb=args.add_size,
+            delay=args.delay,
+        )
+        key_path = plan["key_path"]
+        artifact = "runner"
+    elif args.mode == "runner":
+        # Default: a self-extracting runner that recovers and launches the
+        # payload using the embedded random key (no passphrase required).
+        plan = build_runner_file(
+            source=args.source,
+            output=args.output,
+            add_size_mb=args.add_size,
+            delay=args.delay,
+        )
+        key_path = plan["key_path"]
+        artifact = "runner"
+    else:
+        key_path = encrypt_file(
+            source=args.source,
+            output=args.output,
+            add_size_mb=args.add_size,
+            delay=args.delay,
+        )
+        artifact = "container"
 
     final_size = args.output.stat().st_size
 
     print("[OK] Encryption completed.")
     print(f"[INFO] Input:       {args.source}")
-    print(f"[INFO] Container:   {args.output}")
-
-    if key_path is not None:
-        print(f"[INFO] Key:         {key_path}")
-
+    print(f"[INFO] {artifact.capitalize()}:   {args.output}")
+    print(f"[INFO] Key:         {key_path}")
     print(f"[INFO] Original:    {original_size} bytes")
-    print(f"[INFO] Container:   {final_size} bytes")
+    print(f"[INFO] {artifact.capitalize()}:   {final_size} bytes")
     print(f"[INFO] Added:       {final_size - original_size} bytes")
     print(f"[INFO] Delay:       {args.delay:g} second(s)")
-    print("[INFO] The container is data only; nothing is executed.")
+    if artifact == "runner":
+        print("[INFO] Run the produced executable to recover and launch the payload.")
+    else:
+        print("[INFO] The container is data only; nothing is executed.")
 
     return 0
 

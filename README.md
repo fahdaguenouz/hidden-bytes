@@ -9,6 +9,7 @@
 - [1. Project overview](#1-project-overview)
 - [2. Subject and audit scope](#2-subject-and-audit-scope)
 - [3. Requirements and setup](#3-requirements-and-setup)
+- [3.5. Building single-file executables](#35-building-single-file-executables)
 - [4. Tool 1 — Evasion / HBX1 container](#4-tool-1--evasion--hbx1-container)
 - [5. Tool 2 — Polymorphic generator](#5-tool-2--polymorphic-generator)
 - [6. End-to-end lab walkthrough](#6-end-to-end-lab-walkthrough)
@@ -34,13 +35,13 @@ The `evasion` name is retained because it comes from the assignment. The impleme
 
 ### What this project demonstrates
 
-- AES-256-GCM authenticated encryption.
+- AES-256-GCM authenticated encryption with a freshly generated random key.
 - A simple binary container format with a magic value, metadata, ciphertext, and padding.
 - Exact final-size calculation for a requested padding increase.
 - A recovery delay that is **enforced by the produced artifact itself**, not only by the tool.
 - A self-extracting runner: one file that carries the encrypted payload, waits, decrypts, and launches the recovered program.
-- Passphrase-based key derivation with PBKDF2-HMAC-SHA256, and a dependency-free AES-GCM implementation so the runner needs nothing but a Python interpreter.
-- Authentication failure when the wrong key, wrong passphrase, or modified ciphertext is supplied.
+- A dependency-free AES-GCM implementation so the runner needs nothing but a Python interpreter.
+- Authentication failure when the wrong key or modified ciphertext is supplied.
 - **File-level polymorphism**: a program that rewrites its own source on every run, so its hash changes while its behaviour does not.
 - **A reverse shell payload** that connects back to an address the operator chooses, and the defensive telemetry that such a connection produces.
 - How defenders can investigate unusual file structure and behavior.
@@ -63,7 +64,7 @@ These exclusions are part of the scope, not unfinished features to silently assu
 ```mermaid
 flowchart TD
     A["Original file"] --> B["Read file bytes"]
-    B --> C["Derive AES-256 key from passphrase, or generate a random key"]
+    B --> C["Generate a random AES-256 key"]
     C --> D["Encrypt using AES-256-GCM"]
     D --> E["Produce ciphertext and authentication tag"]
     E --> F["Produce JSON metadata"]
@@ -86,7 +87,7 @@ flowchart TD
     D -- "Inspect" --> E["Display metadata"]
     E --> F["Finish without decrypting"]
 
-    D -- "Decrypt" --> G["Load key file, or derive it from the passphrase"]
+    D -- "Decrypt" --> G["Load key file"]
     G --> H{"Delay enabled?"}
     H -- "Yes" --> I["Wait for configured delay"]
     H -- "No" --> J["Attempt authenticated decryption"]
@@ -167,7 +168,7 @@ The original subject discusses binary manipulation, encryption, file-size change
 Hidden-Bytes/
 ├── src/
 │   ├── __init__.py
-│   ├── common.py          # shared utilities (KDF, passphrase, args)
+│   ├── common.py          # shared utilities (key size, args)
 │   ├── embedding.py       # shared PyInstaller / AES-source helpers
 │   ├── evasion/             # HBX1 packaging tool (package)
 │   │   ├── __init__.py      # public API re-exports
@@ -224,6 +225,12 @@ python3 -m src.evasion --help
 python3 -m src.polymorphic --help
 ```
 
+Run the test suite:
+
+```bash
+python3 -m pytest -q
+```
+
 If the repository includes executable wrapper scripts, they may also be used:
 
 ```bash
@@ -277,6 +284,55 @@ Two results deserve attention:
 
 - **A public DNS or HTTPS check that passes means the VM is not isolated.** Fix the adapter mode before you demonstrate anything.
 - **Defender path exclusions matter for the audit.** If the demo folder is excluded, a local scan will not flag the artifact, and that is not evidence of anything. The preflight reports any exclusions so you and the auditor can talk about it.
+
+### 3.5 Building single-file executables
+
+Both tools can be packaged into a single native executable (a real `.exe` on
+Windows) with PyInstaller. This is required for the audit demonstration on
+Windows, because a Python script renamed to `.exe` does not run on Windows and
+is not analysed as a program by a scanner.
+
+Install PyInstaller inside the isolated VM:
+
+```bash
+python -m pip install pyinstaller
+```
+
+#### Evasion — single-file self-extracting runner
+
+```bash
+python3 -m src.evasion \
+  --encrypt simple_program.exe \
+  --output evaded_program.exe \
+  --add-size 101 \
+  --delay 101
+```
+
+An output path ending in `.exe` is packaged into a real native executable
+automatically. The random AES-256 key is embedded in the executable, so no
+passphrase is required at run time. A sidecar `<output>.key` file is also
+written next to it for CLI-based recovery with `--decrypt --key`.
+
+Use `--no-native` if you deliberately want the Python-archive form under a
+`.exe` name, and `--build-exe` to force a native build for an output path that
+does not end in `.exe`.
+
+#### Polymorphic — single-file executable
+
+```bash
+python3 -m src.polymorphic \
+  --generate polymorphic.exe \
+  --payload lab/reverse_shell_payload.py
+```
+
+An output path ending in `.exe` is packaged into a real native executable
+automatically. The encrypted payload and the random key are embedded in the
+executable; no passphrase is required at run time.
+
+Use `--no-native` if you deliberately want the Python-archive form under a
+`.exe` name, and `--build-exe` to force a native build for an output path that
+does not end in `.exe`.
+
 
 ### What the audit's detection checks actually require
 
@@ -366,7 +422,7 @@ The delay is **stored in the artifact and enforced by the artifact**. The tool d
 
 Two details make this work in practice:
 
-- **The key is not stored in the artifact.** The container is protected by a passphrase; the key is derived with PBKDF2-HMAC-SHA256 (200,000 iterations, 16-byte random salt) at run time. The artifact therefore cannot be unpacked without the passphrase.
+- **The key is not stored in the artifact.** The container is protected by a freshly generated random AES-256 key written to a sidecar `<output>.key` file. The artifact therefore cannot be unpacked without that key file.
 - **The runner has no third-party dependency.** The AES-256-GCM implementation is spliced into the generated launcher, so the artifact needs nothing but a Python 3 interpreter — no `pip install` in the lab VM.
 
 ### 4.2 CLI reference — all options
@@ -389,17 +445,14 @@ The module expects exactly one mode (`--encrypt`, `--decrypt`, or `--inspect`) a
 | `--mode {runner,container}` | Shape of the encrypted artifact | Default: `runner` (self-extracting). Use `container` for a plain `.hbx` data file |
 | `--add-size MB` | Requested increase in final artifact size | Help default: `0.01` MB; `1` requests 1 MiB (1,048,576 bytes); `101` requests 101 MiB |
 | `--delay SECONDS` | Recovery delay stored in the container | Help default: `101` seconds; set a small value such as `2` for a quick demo |
-| `--passphrase TEXT` | Passphrase protecting the container | Prompted for when omitted; the derived key is never written to disk |
-| `--passphrase-file PATH` | Read the passphrase from the first line of a file | Useful for scripted demonstrations |
 | `--key PATH` | Key file to use during decryption | Only needed for `--mode container`; encryption generates `<output>.key` automatically |
 | `--no-delay` | Skip the stored delay during recovery | Useful for controlled tests; do not use it when demonstrating the delay |
 | `--build-exe` | Package the runner as a single native executable with PyInstaller | Produces a real `.exe` on Windows. Requires `--mode runner` and PyInstaller installed |
 
-Passphrases can also be supplied through the `HBX_PASSPHRASE` environment variable, which is the simplest option for a repeatable demonstration:
-
-```bash
-export HBX_PASSPHRASE='lab-passphrase'
-```
+The encryption key is a freshly generated 256-bit random key. It is written to a
+sidecar `<output>.key` file next to the container and is required for
+`--decrypt`. No passphrase is used and no `HBX_PASSPHRASE` environment variable
+is needed.
 
 The defaults shown above are those reported by this project's CLI help. Explicitly set `--add-size` and `--delay` in demonstrations so the behavior is reproducible.
 
@@ -419,8 +472,6 @@ wc -c sample.txt
 #### Step 2 — Encrypt and add 1 MiB to the final size
 
 ```bash
-export HBX_PASSPHRASE='lab-passphrase'
-
 python3 -m src.evasion \
   --encrypt sample.txt \
   --output sample.hbx \
@@ -550,8 +601,6 @@ EOF
 #### Step 2 — Build the self-extracting runner
 
 ```bash
-export HBX_PASSPHRASE='lab-passphrase'
-
 python3 -m src.evasion \
   --encrypt simple_program.py \
   --output obfuscated.pyz \
@@ -605,12 +654,6 @@ python3 -m src.evasion --inspect obfuscated.pyz
   "artifact_type": "runner",
   "ciphertext_length": 39,
   "delay_seconds": 101.0,
-  "kdf": {
-    "env": "HBX_PASSPHRASE",
-    "iterations": 200000,
-    "name": "PBKDF2-HMAC-SHA256",
-    "salt": "<random Base64 value>"
-  },
   "nonce": "<random Base64 value>",
   "original_name": "simple_program.py",
   "original_size": 23
@@ -739,8 +782,7 @@ The container is a custom **data format**, not a Windows PE executable.
 +-----------------------------------------+
 | JSON metadata                            |
 | algorithm, nonce, original name/size,    |
-| ciphertext length, recovery delay,      |
-| optional kdf block (salt, iterations)    |
+| ciphertext length, recovery delay        |
 +-----------------------------------------+
 | AES-GCM ciphertext                       |
 | encrypted original bytes + 16-byte tag   |
@@ -761,7 +803,7 @@ PADDING: Additional bytes that are ignored when reading the encrypted content.
 
 The `ciphertext_length` metadata field identifies the encrypted section's length, including the GCM authentication tag. The recovery code uses this length to avoid treating padding as ciphertext.
 
-The `kdf` block is present only when the container is protected by a passphrase. It records the derivation function, the iteration count, and the salt — none of which are secret — so the runner can derive the same key later.
+The `kdf` block is not present in this safe edition; each container uses a fresh random key stored in a separate `.key` file.
 
 ### 4.5.1 Runner layout
 
@@ -771,7 +813,7 @@ In runner mode the container is embedded in a single file:
 +-----------------------------------------+
 | Launcher (Python source)                |
 | - reads the embedded container          |
-| - derives the key from the passphrase   |
+| - decrypts with the embedded random key |
 | - waits for the stored delay            |
 | - decrypts, writes to a temp dir,       |
 |   launches the payload, cleans up       |
@@ -824,13 +866,12 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[Run the runner artifact] --> B[Read embedded container]
-    B --> C[Read delay and KDF metadata]
-    C --> D[Obtain passphrase: env, file, or prompt]
-    D --> E[Derive key with PBKDF2-HMAC-SHA256]
-    E --> F[Wait for the stored delay]
-    F --> G{AES-GCM authentication succeeds?}
-    G -- No --> H[Report decryption failure and exit]
-    G -- Yes --> I[Write payload to a temporary directory]
+    B --> C[Read delay and metadata]
+    C --> D[Read embedded random key]
+    D --> E[Wait for the stored delay]
+    E --> F{AES-GCM authentication succeeds?}
+    F -- No --> H[Report decryption failure and exit]
+    F -- Yes --> I[Write payload to a temporary directory]
     I --> J[Launch the payload as a child process]
     J --> K[Remove the temporary directory]
 ```
@@ -838,12 +879,12 @@ flowchart TD
 ### 4.8 What the tool does and does not prove
 
 - **Encryption:** the input bytes are encrypted using AES-256-GCM.
-- **Authentication:** a wrong key, wrong passphrase, or modified authenticated ciphertext fails authentication during recovery.
+- **Authentication:** a wrong key or modified authenticated ciphertext fails authentication during recovery.
 - **Size manipulation:** padding makes the final artifact reach the requested size increase, exactly.
 - **Delay:** the wait is enforced **by the produced artifact** before the payload is launched, and it is also honored by `--decrypt`.
 - **Integrity evidence:** matching original/recovered SHA-256 hashes demonstrates successful byte-for-byte recovery.
 - **No antivirus bypass:** encryption, padding, file-size changes, and matching recovery hashes do not demonstrate Defender or VirusTotal evasion.
-- **Key handling:** in `--mode container` the `.key` file is separate from the container but is saved beside it by default; protect it and do not commit it to version control. In `--mode runner` no key file is written at all — the key is derived from the passphrase at run time.
+- **Key handling:** in `--mode container` the `.key` file is separate from the container but is saved beside it by default; protect it and do not commit it to version control. In `--mode runner` the random key is embedded in the artifact so it can recover its payload without a passphrase; a sidecar `.key` file is also written for CLI-based recovery.
 - **Execution transparency:** the runner launches the recovered program as an ordinary child process, prints what it is doing, and removes its temporary directory. It performs no injection, no persistence, and no concealment, and the delay is plainly visible to any behavioural monitor.
 
 ## 5. Tool 2 — Polymorphic generator
@@ -855,7 +896,7 @@ flowchart TD
 The generated program, when it runs:
 
 1. **Rewrites its own source file**, replacing a random signature token. Its SHA-256 therefore changes on every run while its behaviour stays exactly the same.
-2. **Derives the key from the passphrase** (PBKDF2-HMAC-SHA256), decrypts the embedded payload with AES-256-GCM and verifies the payload's SHA-256 digest.
+2. **Decrypts with the embedded random key** using AES-256-GCM and verifies the payload's SHA-256 digest.
 3. **Executes the payload**, forwarding its own command-line arguments to it.
 
 The payload is supplied by the operator as a file. The generated program has no third-party dependency: the AES-256-GCM implementation is spliced into it, so it runs on a machine with nothing but a Python 3 interpreter.
@@ -867,8 +908,7 @@ PowerShell:
 ```powershell
 py -m src.polymorphic `
   --generate polymorphic_demo.py `
-  --payload message.py `
-  --passphrase "lab-passphrase"
+  --payload message.py
 ```
 
 Linux/macOS:
@@ -876,8 +916,7 @@ Linux/macOS:
 ```bash
 python3 -m src.polymorphic \
   --generate polymorphic_demo.py \
-  --payload message.py \
-  --passphrase "lab-passphrase"
+  --payload message.py
 ```
 
 Where `message.py` is a payload file you wrote:
@@ -886,15 +925,12 @@ Where `message.py` is a payload file you wrote:
 print("Hello from the polymorphic payload")
 ```
 
-The passphrase protects the embedded payload. It can also be given with `--passphrase-file` or through the `HBX_PASSPHRASE` environment variable, which is the most convenient option for a repeatable demonstration:
+A fresh random 256-bit key is generated for every build and embedded in the
+generated program, so no passphrase is required at run time.
 
-```bash
-export HBX_PASSPHRASE='lab-passphrase'
-```
-
-**The key is not stored in the generated program.** Only the salt is. The key is derived from the passphrase when the program runs, so the generated file cannot be unpacked without it — the same property the evasion runner has.
-
-The payload is limited to 64 KiB. It must be supplied as a **file**: inline text is rejected, because a payload that is executed should be a deliberate, reviewable file rather than a string on the command line.
+The payload is limited to 64 KiB. It must be supplied as a **file**: inline
+text is rejected, because a payload that is executed should be a deliberate,
+reviewable file rather than a string on the command line.
 
 ### 5.3 Observe the changing hash
 
@@ -932,13 +968,11 @@ The generated file must be writable for the self-modification step. If it is rea
 ```bash
 python3 -m src.polymorphic \
   --generate variant_a.py \
-  --payload message.py \
-  --passphrase "lab-passphrase"
+  --payload message.py
 
 python3 -m src.polymorphic \
   --generate variant_b.py \
-  --payload message.py \
-  --passphrase "lab-passphrase"
+  --payload message.py
 
 sha256sum variant_a.py variant_b.py
 ```
@@ -981,8 +1015,6 @@ python3 lab/listener.py --port 4444
 Build the polymorphic program with the reverse shell payload:
 
 ```bash
-export HBX_PASSPHRASE='lab-passphrase'
-
 python3 -m src.polymorphic \
   --generate polymorphic.exe \
   --payload lab/reverse_shell_payload.py
@@ -1060,7 +1092,7 @@ flowchart TD
     A["Run polymorphic CLI"] --> B["Read payload file"]
     B --> C{"File exists and is not empty?"}
     C -- "No" --> D["Raise error"]
-    C -- "Yes" --> E["Derive AES-256 key with PBKDF2"]
+    C -- "Yes" --> E["Generate a random AES-256 key"]
     E --> F["Encrypt payload with AES-256-GCM"]
     F --> G["Compute payload SHA-256"]
     G --> H["Render launcher with ciphertext, key, nonce, digest, token"]
@@ -1108,11 +1140,10 @@ Use harmless text samples first. These commands are intended to make the behavio
 2. Encrypt it into `obfuscated.pyz` with `--add-size 101 --delay 101` (runner mode, the default).
 3. Record the file size and confirm the increase is exactly 101 MiB.
 4. Run it with `time` and confirm the wall-clock time is at least 101 seconds, and that the payload's own output appears at the end.
-5. Inspect the runner and show the `delay_seconds` and `kdf` metadata.
+5. Inspect the runner and show the `delay_seconds` metadata.
 6. Show that the payload's plaintext does not appear in the artifact (`grep`).
 7. Recover the payload with `--decrypt --no-delay` and compare it to the original.
-8. Run the runner with a wrong passphrase and show that it refuses to decrypt and never launches the payload.
-9. On the Windows VM, repeat with `--build-exe` to produce `evaded_program.exe` and confirm the same behaviour and the same exact size accounting.
+8. On the Windows VM, repeat with `--build-exe` to produce `evaded_program.exe` and confirm the same behaviour and the same exact size accounting.
 
 ### Exercise B — Polymorphism and stable output
 
@@ -1158,11 +1189,11 @@ Do not claim a Defender or VirusTotal bypass based on file size, encryption, has
 
 AES is a symmetric cipher. “256” refers to the key size in bits. GCM is an authenticated-encryption mode: it encrypts the plaintext and produces an authentication tag. During decryption, a wrong key or modified authenticated ciphertext should cause authentication to fail rather than produce accepted plaintext.
 
-The container stores the nonce and metadata, but not the AES key. In `--mode container` the key is stored separately in `<output>.key`. In `--mode runner` it is not stored anywhere: it is derived from the passphrase at run time.
+The container stores the nonce and metadata, but not the AES key. In `--mode container` the key is stored separately in `<output>.key`. In `--mode runner` the random key is embedded in the artifact so it can recover its payload without a passphrase; a sidecar `.key` file is also written for CLI-based recovery.
 
-### PBKDF2-HMAC-SHA256
+### Random key generation
 
-A passphrase is not a key. PBKDF2-HMAC-SHA256 is a deliberately slow key-derivation function: it runs many iterations of a hash over the passphrase and a random salt, so a brute-force attempt costs far more per guess than a plain hash would. The runner stores the salt and the iteration count in cleartext metadata (that is normal — the salt is not secret), and derives a 256-bit key from them.
+Each encryption generates a fresh 256-bit random AES key using `os.urandom`. The key is never derived from a passphrase or any user-supplied input. It is written to a sidecar `.key` file (container mode) or embedded in the runner artifact (runner mode), and is required to recover the payload.
 
 ### Dependency-free AES in the runner
 
@@ -1218,7 +1249,7 @@ flowchart LR
     U[Auditor / learner] --> E[Evasion CLI]
     U --> P[Polymorphic CLI]
     E --> H[HBX1 container]
-    E --> K[Key file or passphrase-derived key]
+    E --> K[Key file or embedded random key]
     H --> R[Runner: wait, decrypt, launch]
     R --> O[Payload executed as a child process]
     E --> R2[Container mode: recover to disk]
@@ -1254,8 +1285,8 @@ Use this checklist during the audit. Mark an item only after collecting evidence
 - [ ] **Size:** record the original and final byte lengths and verify the configured increase is exact.
 - [ ] **Delay:** demonstrate a non-zero delay **in the produced artifact** (runner mode), and time it.
 - [ ] **Recovery:** compare original and recovered SHA-256 hashes.
-- [ ] **Integrity failure:** record that recovery with an incorrect key, an incorrect passphrase, or tampered ciphertext fails authentication.
-- [ ] **Passphrase protection:** show that the runner contains no key material and refuses to decrypt with the wrong passphrase.
+- [ ] **Integrity failure:** record that recovery with an incorrect key or tampered ciphertext fails authentication.
+- [ ] **Key protection:** show that the runner's embedded key is required for recovery, and that the sidecar `.key` file protects the container in `--mode container`.
 - [ ] **Polymorphism:** show that two independently generated variants have different hashes.
 - [ ] **Self-modification:** show a generated program's hash before and after execution.
 - [ ] **Stable output:** preserve output from multiple runs and show that the message stays the same.
@@ -1266,7 +1297,7 @@ Use this checklist during the audit. Mark an item only after collecting evidence
 - [ ] **Defender:** run `lab/defender_scan.ps1` and record the verdict exactly as observed.
 - [ ] **VirusTotal:** run `lab/vt_check.py` on your own artifact and record the measured ratio.
 - [ ] **Limitations:** report the measured detection result, not a claim. Identify what the result depends on.
-- [ ] **Evidence handling:** store logs/screenshots and test hashes without exposing key or passphrase contents.
+- [ ] **Evidence handling:** store logs/screenshots and test hashes without exposing key contents.
 
 ### Suggested evidence directory
 
@@ -1280,7 +1311,6 @@ audit/
 ├── runner-timing.txt
 ├── recovery-hashes.txt
 ├── wrong-key-test.txt
-├── wrong-passphrase-test.txt
 ├── polymorphic-hashes.txt
 ├── polymorphic-output.txt
 └── limitations-and-findings.md
@@ -1318,7 +1348,7 @@ The project illustrates patterns that defenders can investigate, but no single i
 - **A launcher that does not match its own extension:** a Python zipapp renamed to `.exe`, or a PyInstaller bundle whose content is mostly padding, will not match what a file-type detector expects. Note that this is a *detection opportunity for defenders*, not a technique for evading them.
 - **Changing hashes:** exact hashes identify exact byte sequences; inert changes can produce a new hash without changing visible behavior. Combine hashes with normalized/fuzzy similarity, signing status, code structure, process behavior, memory observations, and network telemetry.
 - **Unexpected network activity:** monitor outbound connections from applications that do not normally need them, especially when combined with suspicious child processes or command interpreters.
-- **Key handling:** protect key files with access controls; never commit real keys to source control or include them in audit screenshots. In runner mode there is no key file, but the passphrase is still a secret.
+- **Key handling:** protect key files with access controls; never commit real keys to source control or include them in audit screenshots. In runner mode the key is embedded in the artifact; in `--mode container` the key is in the separate `.key` file.
 
 Recommended controls include application control/allowlisting, least privilege, egress filtering, endpoint detection and response, protected logging, rapid patching, and isolated analysis environments.
 
@@ -1331,7 +1361,7 @@ Recommended controls include application control/allowlisting, least privilege, 
 3. **The reverse shell has no operational hardening:** it has no persistence, no privilege escalation, no lateral movement, no target discovery and no evasion. It reaches exactly one address, chosen on the command line. It is a teaching artifact, not a usable implant.
 4. **Not a native PE polymorpher:** the self-modification is a text substitution in a Python source file, and the `--build-exe` output is a PyInstaller bundle. Neither is machine-code mutation.
 5. **The self-modification needs a writable file:** if the generated program is read-only, the signature update fails and the hash stops changing. The program still runs.
-6. **Passphrase strength is the user's responsibility:** PBKDF2 with 200,000 iterations is reasonable for a lab exercise, but a weak passphrase still makes the payload recoverable. The salt and iteration count are in cleartext metadata, by design.
+6. **Key protection is the user's responsibility:** the random AES-256 key is written to a sidecar `.key` file (container mode) or embedded in the runner artifact (runner mode). Protect the `.key` file and the runner artifact with access controls; anyone who can read them can recover the payload.
 7. **The `--build-exe` output has a fixed runtime overhead:** the bundled Python interpreter adds roughly 9–15 MB, so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
 8. **Manual isolation verification:** source code and README instructions cannot prove the VM is isolated.
 9. **Audit results must be measured:** do not claim a detection percentage or a pass without recorded, reproducible evidence.

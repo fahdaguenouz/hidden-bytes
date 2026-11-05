@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
+"""Launcher for the polymorphic self-modifying program generator.
+
+Usage: ./polymorphic --generate <output-binary> --payload <payload-file>
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from src.polymorphic import main
 
-raise SystemExit(main())
-
+if __name__ == "__main__":
+    raise SystemExit(main())

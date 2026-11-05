@@ -115,7 +115,9 @@ def encrypt_file(
 
     body, header, key = build_payload(source, delay)
 
-    requested_size = source.stat().st_size + round(add_size_mb * MIB)
+    # header["original_size"] is len(plaintext) computed by build_payload;
+    # reuse it instead of calling source.stat() again.
+    requested_size = header["original_size"] + round(add_size_mb * MIB)
     padding = padding_for(requested_size, len(body))
 
     output.parent.mkdir(parents=True, exist_ok=True)
