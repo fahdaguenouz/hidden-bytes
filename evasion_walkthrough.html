@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Evasion Tool Walkthrough — Hidden-Bytes</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background: #f4f6f8;
+    color: #222;
+    line-height: 1.6;
+  }
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  header {
+    background: linear-gradient(135deg, #1f3a5f 0%, #2e5f8a 100%);
+    color: #fff;
+    padding: 32px 24px;
+    border-radius: 12px 12px 0 0;
+    margin-bottom: 0;
+  }
+  header h1 { font-size: 28px; margin-bottom: 8px; }
+  header p { font-size: 16px; opacity: 0.95; }
+  .intro {
+    background: #fff;
+    padding: 20px;
+    border-left: 5px solid #2e5f8a;
+    margin: 20px 0;
+    border-radius: 4px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  }
+  .card {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    border: 1px solid #e3e7eb;
+  }
+  .card h2 {
+    color: #1f3a5f;
+    margin-bottom: 14px;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card h2::before { content: ''; width: 4px; height: 20px; background: #2e5f8a; border-radius: 2px; }
+  .step-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 16px 0;
+    justify-content: center;
+  }
+  .step {
+    background: #eef4fa;
+    border: 2px solid #b9cfe6;
+    border-radius: 10px;
+    padding: 14px 18px;
+    flex: 1 1 220px;
+    max-width: 260px;
+    text-align: center;
+    position: relative;
+    transition: transform 0.2s;
+  }
+  .step:hover { transform: translateY(-2px); border-color: #2e5f8a; }
+  .step.num { font-size: 20px; font-weight: 700; color: #2e5f8a; margin-bottom: 6px; }
+  .step.title { font-weight: 600; color: #1f3a5f; font-size: 15px; margin-bottom: 6px; }
+  .step.desc { font-size: 13px; color: #444; }
+  .arrow {
+    align-self: center;
+    color: #2e5f8a;
+    font-size: 20px;
+    font-weight: bold;
+    margin: 0 4px;
+    white-space: nowrap;
+  }
+  .flex-row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .half { flex: 1 1 480px; }
+  .chart-box {
+    background: #fff;
+    border: 1px solid #e3e7eb;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 16px;
+    text-align: center;
+  }
+  svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .flow-line {
+    stroke: #2e5f8a;
+    stroke-width: 3;
+    fill: none;
+    stroke-linecap: round;
+  }
+  .node {
+    fill: #eef4fa;
+    stroke: #2e5f8a;
+    stroke-width: 2;
+    rx: 8;
+    ry: 8;
+  }
+  .node-text {
+    font-family: sans-serif;
+    font-size: 13px;
+    fill: #1f3a5f;
+    font-weight: 600;
+    text-anchor: middle;
+    dominant-baseline: middle;
+  }
+  .highlight { background: #fff3cd; border-left-color: #d9a100; }
+  .safe-box { background: #e7f3e8; border-left-color: #28a745; }
+  .danger-box { background: #fdecea; border-left-color: #dc3545; }
+  .key-file {
+    background: #2e5f8a;
+    color: #fff;
+    border-radius: 6px;
+    padding: 12px;
+    font-family: monospace;
+    text-align: center;
+    font-size: 13px;
+    margin: 8px 0;
+  }
+  code { font-family: 'Consolas', 'Monaco', monospace; background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .cmd {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 14px;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 13px;
+    margin: 10px 0;
+    overflow-x: auto;
+  }
+  .cmd .prompt { color: #569cd6; }
+  .cmd .arg { color: #ce9178; }
+  .checklist {
+    list-style: none;
+    padding-left: 0;
+  }
+  .checklist li {
+    padding: 8px 0;
+    border-bottom: 1px solid #eef1f5;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .checklist li:last-child { border-bottom: none; }
+  .check { color: #28a745; font-weight: bold; }
+  .footer {
+    margin-top: 30px;
+    padding: 16px;
+    color: #666;
+    font-size: 13px;
+    text-align: center;
+    border-top: 1px solid #ddd;
+  }
+  .non-tech { font-style: italic; color: #555; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🔐 Evasion Tool — Walkthrough</h1>
+    <p>Hidden-Bytes Project &nbsp;|&nbsp; For non-technical stakeholders &nbsp;|&nbsp; Safe educational edition</p>
+  </div>
+
+  <div class="intro">
+    <strong>What this tool does in plain language:</strong><br>
+    The Evasion tool takes any ordinary file (for example, a small program that prints "Hello, World!"),
+    <strong>locks it inside an encrypted container</strong>, pads it up to a requested size, and packages it as a
+    <strong>single self-extracting file</strong> that waits for a delay, then unlocks and runs the original program.
+    Nothing is executed during the encryption step — the output is just data.
+  </div>
+
+  <div class="card">
+    <h2>1. The Three Modes at a Glance</h2>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">--encrypt</div>
+        <div class="desc">Locks a file into an encrypted container or self-extracting runner. Adds padding and delay.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">--decrypt</div>
+        <div class="desc">Unlocks a container using the sidecar key file and writes the original file back to disk.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">--inspect</div>
+        <div class="desc">Shows what is inside a container without unlocking it (size, delay, name).</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. How Encryption Works (Step by Step)</h2>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">Read the file</div>
+        <div class="desc">The tool reads the original file's bytes into memory.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">Generate a random key</div>
+        <div class="desc">A fresh 256-bit random AES key is created. No password is needed.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">Encrypt</div>
+        <div class="desc">The file is locked with AES-256-GCM. Only the key can unlock it.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">4</div>
+        <div class="title">Add metadata</div>
+        <div class="desc">Name, size, delay, and a nonce are stored in a JSON header.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">5</div>
+        <div class="title">Pad to size</div>
+        <div class="desc">Random filler is added so the final file reaches the requested size (e.g. +101 MB).</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">6</div>
+        <div class="title">Save + key file</div>
+        <div class="desc">The container is saved, and the key is written to a separate <code>.key</code> file.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card safe-box">
+    <h2 style="margin-bottom: 12px;">⚠️ Platform Note — .exe Is Windows Only</h2>
+    <p style="font-size: 14px; margin-bottom: 10px;">
+      <strong>.exe files only run on Windows.</strong> The subject requires a Windows VM for the
+      <code>.exe</code> demonstration. On Linux/macOS, use an output name without <code>.exe</code> (e.g. <code>evaded_program</code>
+      or <code>evaded_program.pyz</code>) — it will be a self-extracting Python script that runs with <code>python3</code>.
+    </p>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">🪟</div>
+        <div class="title">Windows VM</div>
+        <div class="desc">Output: <code>evaded_program.exe</code> — real native executable.</div>
+      </div>
+      <div class="arrow">🔄</div>
+      <div class="step">
+        <div class="num">🐧</div>
+        <div class="title">Linux / macOS</div>
+        <div class="desc">Output: <code>evaded_program</code> — run with <code>python3 evaded_program</code>.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card flex-row">
+    <div class="half">
+      <h2 style="margin-bottom: 12px;">3. What Gets Produced</h2>
+      <div class="key-file">evaded_program&nbsp;&nbsp;•&nbsp;&nbsp;evaded_program.key</div>
+      <p style="margin-top: 12px; font-size: 14px;">
+        <strong>evaded_program</strong> — the self-extracting runner. It contains the locked payload and waits before launching it.<br><br>
+        <strong>evaded_program.key</strong> — the sidecar key file needed to unlock the container later. Keep it private.<br><br>
+        <em>(On Windows, the output name would end in <code>.exe</code> instead.)</em>
+      </p>
+    </div>
+    <div class="half chart-box">
+      <h2 style="margin-bottom: 14px;">4. File Size Accounting</h2>
+      <svg viewBox="0 0 500 260" width="500" height="260">
+        <rect x="40" y="180" width="300" height="40" fill="#b9cfe6" rx="4"/>
+        <text x="190" y="205" text-anchor="middle" font-size="13" fill="#1f3a5f" font-weight="600">Original file (e.g. 23 bytes)</text>
+
+        <rect x="40" y="100" width="420" height="60" fill="#ffd166" rx="4"/>
+        <text x="250" y="130" text-anchor="middle" font-size="13" fill="#1f3a5f" font-weight="600">Padding (e.g. +101 MB)</text>
+
+        <rect x="40" y="30" width="56" height="50" fill="#2e5f8a" rx="4"/>
+        <text x="68" y="55" text-anchor="middle" font-size="12" fill="#fff" font-weight="600">Metadata + encrypted payload</text>
+
+        <text x="40" y="245" font-size="12" fill="#444">Total = Original + Padding + Overhead (exact)</text>
+      </svg>
+    </div>
+  </div>
+
+  <div class="card safe-box">
+    <h2>5. The Delay — Enforced by the File Itself</h2>
+    <p style="margin-bottom: 14px;">
+      When you run the produced file, it waits for the configured delay (for example 101 seconds), then unlocks and
+      launches the original program. The delay is built into the file — the tool does not need to be running.
+    </p>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">▶</div>
+        <div class="title">Run the file</div>
+        <div class="desc">The artifact starts.</div>
+      </div>
+      <div class="arrow">⏳</div>
+      <div class="step">
+        <div class="num">⏱</div>
+        <div class="title">Waits</div>
+        <div class="desc">Stays idle for the delay (e.g. 101s).</div>
+      </div>
+      <div class="arrow">🔓</div>
+      <div class="step">
+        <div class="num">📦</div>
+        <div class="title">Unlocks</div>
+        <div class="desc">Decrypts the payload to a temp folder.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">🚀</div>
+        <div class="title">Launches</div>
+        <div class="desc">Runs the original program.</div>
+      </div>
+    </div>
+    <div class="cmd">
+<span class="prompt">$</span> <span class="arg">./evaded_program.exe</span><br>
+[INFO] Execution delayed by 101 seconds...<br>
+[INFO] Binary decrypted successfully.<br>
+[INFO] Target program executed.<br>
+Hello, World!
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>6. Example Commands</h2>
+    <div class="cmd">
+<span class="prompt">$</span> ./evasion --encrypt simple_program --output evaded_program --add-size 101 --delay 101
+    </div>
+    <div class="cmd">
+<span class="prompt">$</span> ./evasion --inspect evaded_program
+    </div>
+    <div class="cmd">
+<span class="prompt">$</span> ./evasion --decrypt evaded_program --output recovered --key evaded_program.key --no-delay
+    </div>
+  </div>
+
+  <div class="footer">
+    Hidden-Bytes — Safe Educational Edition &nbsp;|&nbsp; Evasion Tool Walkthrough &nbsp;|&nbsp;
+    For educational and authorized testing purposes only.
+  </div>
+</div>
+</body>
+</html>
