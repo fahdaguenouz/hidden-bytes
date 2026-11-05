@@ -1,4 +1,4 @@
-"""Shared constants for the HBX1 container format."""
+
 
 from __future__ import annotations
 
@@ -27,3 +27,7 @@ RUNNER_MAGIC = b"HBX-RUNNER-V1"
 # Name of the container file when the runner is packaged as a single
 # executable (PyInstaller one-file mode).
 RUNNER_CONTAINER_NAME = "payload.hbx"
+
+MAX_KDF_ITERATIONS = 1_000_000
+
+
