@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..common import  add_common_args, build_passphrase_source, positive_number, read_passphrase, resolve_passphrase_for_decrypt
+from ..common import delay_number, positive_number
 from .container import inspect_file, read_container_header
 from .crypto import decrypt_file, encrypt_file
 from .runner import (
@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--delay",
-        type=positive_number,
+        type=delay_number,
         default=101.0,
         metavar="SECONDS",
         help="recovery delay stored in the container (default: 101 seconds)",
@@ -81,7 +81,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="AES key file used with --decrypt (generated automatically on encrypt)",
     )
-    add_common_args(parser)
     parser.add_argument(
         "--no-delay",
         action="store_true",
@@ -114,88 +113,30 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     if args.output is None:
         parser.error("--output is required with --encrypt")
 
-    if args.build_exe and args.mode != "runner":
-        parser.error("--build-exe requires --mode runner")
-
     original_size = args.source.stat().st_size
 
-    passphrase = None
-    passphrase_source: dict = {}
-    if args.passphrase or args.passphrase_file:
-        passphrase, passphrase_source = read_passphrase(args.passphrase, args.passphrase_file)
-    else:
-        passphrase_source = build_passphrase_source(None, None)
-
-    if args.mode == "container":
-        key_path = encrypt_file(
-            source=args.source,
-            output=args.output,
-            add_size_mb=args.add_size,
-            delay=args.delay,
-            passphrase=passphrase,
-            passphrase_source=passphrase_source if passphrase else None,
-        )
-
-        final_size = args.output.stat().st_size
-
-        print("[OK] Encryption completed.")
-        print(f"[INFO] Input:       {args.source}")
-        print(f"[INFO] Container:   {args.output}")
-        if key_path is not None:
-            print(f"[INFO] Key:         {key_path}")
-        print(f"[INFO] Original:    {original_size} bytes")
-        print(f"[INFO] Container:   {final_size} bytes")
-        print(f"[INFO] Added:       {final_size - original_size} bytes")
-        print(f"[INFO] Delay:       {args.delay:g} second(s)")
-        print("[INFO] The container is data only; nothing is executed.")
-        return 0
-
-    # A file named ".exe" that is really a script does not run on Windows
-    # and is not analysed as a program by a scanner, so package a real
-    # native executable by default in that case.
-    wants_native = args.build_exe or (
-        args.output.suffix.lower() == ".exe" and not args.no_native
-    )
-
-    if wants_native:
-        build_executable_from_source(
-            source=args.source,
-            output=args.output,
-            add_size_mb=args.add_size,
-            delay=args.delay,
-            passphrase=passphrase,
-            passphrase_source=passphrase_source,
-        )
-        final_size = args.output.stat().st_size
-        print("[OK] Encryption completed.")
-        print(f"[INFO] Input:       {args.source}")
-        print(f"[INFO] Executable:  {args.output}")
-        print(f"[INFO] Original:    {original_size} bytes")
-        print(f"[INFO] Executable:  {final_size} bytes")
-        print(f"[INFO] Added:       {final_size - original_size} bytes")
-        print(f"[INFO] Delay:       {args.delay:g} second(s)")
-        print("[INFO] Run the executable to trigger the delayed recovery.")
-        return 0
-
-    build_runner_file(
+    key_path = encrypt_file(
         source=args.source,
         output=args.output,
         add_size_mb=args.add_size,
         delay=args.delay,
-        passphrase=passphrase,
-        passphrase_source=passphrase_source,
     )
 
     final_size = args.output.stat().st_size
 
     print("[OK] Encryption completed.")
     print(f"[INFO] Input:       {args.source}")
-    print(f"[INFO] Runner:      {args.output}")
+    print(f"[INFO] Container:   {args.output}")
+
+    if key_path is not None:
+        print(f"[INFO] Key:         {key_path}")
+
     print(f"[INFO] Original:    {original_size} bytes")
-    print(f"[INFO] Runner:      {final_size} bytes")
+    print(f"[INFO] Container:   {final_size} bytes")
     print(f"[INFO] Added:       {final_size - original_size} bytes")
     print(f"[INFO] Delay:       {args.delay:g} second(s)")
-    print("[INFO] Run the runner to trigger the delayed recovery.")
+    print("[INFO] The container is data only; nothing is executed.")
+
     return 0
 
 
@@ -203,23 +144,12 @@ def _run_decrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     if args.output is None:
         parser.error("--output is required with --decrypt")
 
-    try:
-        header = read_container_header(args.source)
-    except (OSError, ValueError, EOFError):
-        header = {}
-
-    passphrase = resolve_passphrase_for_decrypt(
-        header,
-        args.passphrase,
-        args.passphrase_file,
-    )
-
+    
     decrypt_file(
         source=args.source,
         output=args.output,
         key_path=args.key,
         no_delay=args.no_delay,
-        passphrase=passphrase,
     )
 
     print("[OK] Recovery completed.")
