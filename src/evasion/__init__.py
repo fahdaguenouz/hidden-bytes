@@ -14,15 +14,12 @@ from .constants import (
     GCM_TAG_SIZE,
     HEADER_SIZE,
     KEY_SIZE,
-    KDF_ITERATIONS,
-    KDF_NAME,
     MAGIC,
     MAX_HEADER_SIZE,
     MIB,
     NONCE_SIZE,
     RUNNER_CONTAINER_NAME,
     RUNNER_MAGIC,
-    SALT_SIZE,
 )
 from .container import (
     inspect_file,
@@ -39,7 +36,7 @@ from .crypto import (
     load_key,
     padding_for,
 )
-from .pure_aes import InvalidTagError, decrypt_gcm, derive_key
+from .pure_aes import InvalidTagError, decrypt_gcm
 from .runner import (
     build_executable,
     build_executable_from_source,
@@ -56,8 +53,6 @@ __all__ = [
     "GCM_TAG_SIZE",
     "HEADER_SIZE",
     "InvalidTagError",
-    "KDF_ITERATIONS",
-    "KDF_NAME",
     "KEY_SIZE",
     "MAGIC",
     "MAX_HEADER_SIZE",
@@ -65,7 +60,6 @@ __all__ = [
     "NONCE_SIZE",
     "RUNNER_CONTAINER_NAME",
     "RUNNER_MAGIC",
-    "SALT_SIZE",
     "build_executable",
     "build_executable_from_source",
     "build_parser",
@@ -74,7 +68,6 @@ __all__ = [
     "decrypt_file",
     "decrypt_gcm",
     "decrypt_payload",
-    "derive_key",
     "encrypt_file",
     "inspect_file",
     "is_runner",
