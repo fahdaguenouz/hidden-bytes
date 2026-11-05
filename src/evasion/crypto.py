@@ -4,8 +4,9 @@ A container is the encrypted form of a payload. It can be written on its own
 (``.hbx`` file) or embedded in a self-extracting runner that waits for the
 configured delay before recovering the payload.
 
-The key is either read from a sidecar key file or derived from a passphrase
-with PBKDF2-HMAC-SHA256 when the header carries ``kdf`` metadata.
+Each container is protected by a freshly generated 256-bit random key. The key
+is written to a sidecar ``.key`` file and is required to recover the payload;
+it is never derived from a passphrase.
 """
 
 from __future__ import annotations
@@ -21,31 +22,22 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from .constants import (
     HEADER_SIZE,
     KEY_SIZE,
-    KDF_ITERATIONS,
-    KDF_NAME,
     MAGIC,
     MAX_HEADER_SIZE,
     MIB,
     NONCE_SIZE,
-    SALT_SIZE,
 )
-from ..common import derive_key
 from .container import read_container
 from .encoding import b64_decode, b64_encode
 
 
-def build_payload(
-    source: Path,
-    delay: float,
-    passphrase: str | None = None,
-    passphrase_source: dict | None = None,
-) -> tuple[bytes, dict, bytes | None]:
+def build_payload(source: Path, delay: float) -> tuple[bytes, dict, bytes]:
     """Encrypt a file in memory.
 
     Returns ``(body, header, key)`` where ``body`` is the container without
     the size padding, ``header`` is its metadata and ``key`` is the raw
-    encryption key. The key is written to a sidecar file only when the
-    container is not protected by a passphrase.
+    256-bit random encryption key. The key must be written to a sidecar
+    ``.key`` file so the container can be recovered later.
     """
 
     if delay < 0:
@@ -54,22 +46,8 @@ def build_payload(
     plaintext = source.read_bytes()
     original_size = len(plaintext)
 
-    key: bytes | None = None
-    kdf: dict | None = None
-
-    if passphrase is None:
-        # Fresh 256-bit key for every encryption.
-        key = AESGCM.generate_key(bit_length=256)
-    else:
-        salt = os.urandom(SALT_SIZE)
-        key = derive_key(passphrase, salt, KDF_ITERATIONS)
-        kdf = {
-            "name": KDF_NAME,
-            "iterations": KDF_ITERATIONS,
-            "salt": b64_encode(salt),
-        }
-        if passphrase_source:
-            kdf.update(passphrase_source)
+    # Fresh 256-bit key for every encryption.
+    key = AESGCM.generate_key(bit_length=256)
 
     # Fresh 96-bit nonce for every encryption.
     nonce = os.urandom(NONCE_SIZE)
@@ -85,8 +63,6 @@ def build_payload(
         "original_size": original_size,
         "nonce": b64_encode(nonce),
     }
-    if kdf is not None:
-        header["kdf"] = kdf
 
     raw_header = json.dumps(
         header, sort_keys=True, separators=(",", ":")
@@ -117,17 +93,14 @@ def encrypt_file(
     output: Path,
     add_size_mb: float,
     delay: float,
-    passphrase: str | None = None,
-    passphrase_source: dict | None = None,
-) -> Path | None:
+) -> Path:
     """Encrypt a file into a standalone HBX1 container.
 
     The final container size is ``original_size + round(add_size_mb * MIB)``,
     reached by appending cryptographically random padding.
 
-    When no passphrase is given, the key is written to a sidecar ``.key``
-    file and its path is returned. With a passphrase, the key is derived from
-    it and nothing is written to disk.
+    A fresh random key is generated for every encryption and written to a
+    sidecar ``.key`` file next to the output. The sidecar path is returned.
     """
 
     source = source.resolve()
@@ -140,9 +113,7 @@ def encrypt_file(
     if add_size_mb < 0:
         raise ValueError("add_size_mb cannot be negative")
 
-    body, header, key = build_payload(
-        source, delay, passphrase, passphrase_source
-    )
+    body, header, key = build_payload(source, delay)
 
     requested_size = source.stat().st_size + round(add_size_mb * MIB)
     padding = padding_for(requested_size, len(body))
@@ -160,10 +131,6 @@ def encrypt_file(
             "internal size verification failed: "
             f"expected {requested_size}, got {actual_size}"
         )
-
-    if "kdf" in header:
-        # The key is derived from the passphrase, so there is no key file.
-        return None
 
     key_path = output.with_name(output.name + ".key")
     key_path.write_text(b64_encode(key) + "\n", encoding="ascii")
@@ -191,29 +158,12 @@ def load_key(key_path: Path) -> bytes:
     return key
 
 
-def _resolve_key(
-    header: dict,
-    key_path: Path | None,
-    passphrase: str | None,
-) -> bytes:
-    """Return the key of a container, from a key file or a passphrase."""
-
-    kdf = header.get("kdf")
-
-    if kdf is not None:
-        if passphrase is None:
-            raise ValueError(
-                "this container is protected by a passphrase; supply it with "
-                "--passphrase, --passphrase-file or the HBX_PASSPHRASE "
-                "environment variable"
-            )
-        salt = b64_decode(kdf["salt"], "kdf salt")
-        return derive_key(passphrase, salt, int(kdf["iterations"]))
+def _resolve_key(header: dict, key_path: Path | None) -> bytes:
+    """Return the key of a container from its sidecar key file."""
 
     if key_path is None:
         raise ValueError(
-            "a key file is required to recover this container; "
-            "use --key"
+            "a key file is required to recover this container; use --key"
         )
 
     return load_key(key_path)
@@ -231,11 +181,6 @@ def decrypt_payload(
     try:
         plaintext = AESGCM(key).decrypt(nonce, ciphertext, MAGIC)
     except InvalidTag as exc:
-        if "kdf" in header:
-            raise ValueError(
-                "authentication failed: wrong passphrase or the container "
-                "data was modified"
-            ) from exc
         raise ValueError(
             "authentication failed: wrong key or container data was modified"
         ) from exc
@@ -255,12 +200,11 @@ def decrypt_file(
     output: Path,
     key_path: Path | None = None,
     no_delay: bool = False,
-    passphrase: str | None = None,
 ) -> None:
     """Recover the original plaintext from an HBX1 container or a runner.
 
     The recovered file is written to disk only; it is never executed by this
-    function.
+    function. The sidecar key file (``--key``) is required to decrypt.
     """
 
     source = source.resolve()
@@ -276,7 +220,7 @@ def decrypt_file(
         print(f"[INFO] Recovery delayed for {delay:g} second(s)...", flush=True)
         time.sleep(delay)
 
-    key = _resolve_key(header, key_path, passphrase)
+    key = _resolve_key(header, key_path)
     plaintext = decrypt_payload(header, ciphertext, key)
 
     output.parent.mkdir(parents=True, exist_ok=True)
