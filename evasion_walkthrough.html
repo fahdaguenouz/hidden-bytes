@@ -332,15 +332,90 @@ Hello, World!
   </div>
 
   <div class="card">
-    <h2>6. Example Commands</h2>
+    <h2>6. Example Commands — Step by Step</h2>
+
+    <h3 style="margin-bottom: 8px; color: #1f3a5f;">Command 1 — Encrypt a file</h3>
     <div class="cmd">
 <span class="prompt">$</span> ./evasion --encrypt simple_program --output evaded_program --add-size 101 --delay 101
     </div>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">Read</div>
+        <div class="desc">Tool reads <code>simple_program</code> bytes into memory.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">Key</div>
+        <div class="desc">A fresh 256-bit random AES key is generated.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">Lock</div>
+        <div class="desc">File is encrypted with AES-256-GCM.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">4</div>
+        <div class="title">Pad</div>
+        <div class="desc">Filler added to reach exactly +101 MB.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">5</div>
+        <div class="title">Save</div>
+        <div class="desc">Runner saved as <code>evaded_program</code>; key saved to <code>evaded_program.key</code>.</div>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom: 8px; color: #1f3a5f;">Command 2 — Inspect (see inside without unlocking)</h3>
     <div class="cmd">
 <span class="prompt">$</span> ./evasion --inspect evaded_program
     </div>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">Read</div>
+        <div class="desc">Tool opens <code>evaded_program</code>.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">Parse</div>
+        <div class="desc">Reads the JSON header (name, size, delay, nonce).</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">Show</div>
+        <div class="desc">Prints metadata — no decryption, no key needed.</div>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom: 8px; color: #1f3a5f;">Command 3 — Decrypt back to original</h3>
     <div class="cmd">
 <span class="prompt">$</span> ./evasion --decrypt evaded_program --output recovered --key evaded_program.key --no-delay
+    </div>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">Load key</div>
+        <div class="desc">Reads the 256-bit key from <code>evaded_program.key</code>.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">Unlock</div>
+        <div class="desc">Decrypts the payload with AES-256-GCM.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">Save</div>
+        <div class="desc">Writes recovered bytes to <code>recovered</code>.</div>
+      </div>
     </div>
   </div>
 

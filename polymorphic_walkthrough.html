@@ -268,35 +268,98 @@
     </div>
   </div>
 
-  <div class="card safe-box">
-    <h2>5. The Payload — What It Can Do</h2>
-    <p style="margin-bottom: 14px; font-size: 14px;">
-      The payload is code <strong>you supply</strong>. The tool only carries and runs it. A common example in this project is a
-      <em>reverse shell</em> — a tiny program that connects back to one address you choose (for example, your own laptop in the lab).
-    </p>
-    <div class="cmd">
-<span class="prompt">$</span> python3 lab/listener.py --port 4444<br>
-<span class="prompt">$</span> ./polymorphic --host 127.0.0.1 --port 4444
-    </div>
-    <div class="checklist">
-      <li><span class="check">✓</span> The target address and port are always chosen by you.</li>
-      <li><span class="check">✓</span> It opens exactly one connection — no scanning, no spreading.</li>
-      <li><span class="cross">✗</span> No persistence, no privilege escalation, no hiding.</li>
-    </div>
-  </div>
-
   <div class="card">
-    <h2>6. Example Commands</h2>
+    <h2>5. Example Commands — Step by Step</h2>
+    <h3 style="margin-bottom: 8px; color: #6b2e4e;">Command 1 — Generate a polymorphic program</h3>
     <div class="cmd">
 <span class="prompt">$</span> ./polymorphic --generate polymorphic_demo.py --payload message.py
     </div>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">Read</div>
+        <div class="desc">Tool reads <code>message.py</code> (your payload).</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">Key</div>
+        <div class="desc">A fresh 256-bit random AES key is generated.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">Lock</div>
+        <div class="desc">Payload is encrypted with AES-256-GCM.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">4</div>
+        <div class="title">Wrap</div>
+        <div class="desc">A self-changing wrapper program is built around the locked payload.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">5</div>
+        <div class="title">Save</div>
+        <div class="desc">Generated program saved as <code>polymorphic_demo.py</code>.</div>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom: 8px; color: #6b2e4e;">Command 2 — Watch the hash change, output stay the same</h3>
     <div class="cmd">
 <span class="prompt">$</span> sha256sum polymorphic_demo.py<br>
 <span class="prompt">$</span> python3 polymorphic_demo.py<br>
 <span class="prompt">$</span> sha256sum polymorphic_demo.py
     </div>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">Hash 1</div>
+        <div class="desc">Record the SHA-256 fingerprint of the file.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">Run</div>
+        <div class="desc">Program rewrites its own signature token, then runs your payload.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">Hash 2</div>
+        <div class="desc">Record the fingerprint again — it changed, but output stayed the same.</div>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom: 8px; color: #6b2e4e;">Command 3 — Generate with the reverse shell payload</h3>
     <div class="cmd">
 <span class="prompt">$</span> ./polymorphic --generate polymorphic_demo --payload lab/reverse_shell_payload.py
+    </div>
+    <div class="step-row">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">Read</div>
+        <div class="desc">Tool reads <code>lab/reverse_shell_payload.py</code>.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">Key</div>
+        <div class="desc">A fresh 256-bit random AES key is generated.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">Lock</div>
+        <div class="desc">Payload is encrypted with AES-256-GCM.</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="num">4</div>
+        <div class="title">Save</div>
+        <div class="desc">Generated program saved as <code>polymorphic_demo</code>.</div>
+      </div>
     </div>
   </div>
 
