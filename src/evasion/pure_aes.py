@@ -12,7 +12,6 @@ must stay importable with the standard library only and must not use
 ``from __future__`` statements.
 """
 
-import hashlib
 import hmac
 import struct
 
@@ -262,15 +261,3 @@ def encrypt_gcm(key, nonce, plaintext, aad=b""):
     tag = bytes(left ^ right for left, right in zip(digest, mask))
 
     return body + tag
-
-
-def derive_key(passphrase, salt, iterations, length=32):
-    """Derive an encryption key from a passphrase with PBKDF2-HMAC-SHA256."""
-
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        passphrase.encode("utf-8"),
-        salt,
-        iterations,
-        dklen=length,
-    )
