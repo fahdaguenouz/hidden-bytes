@@ -8,8 +8,9 @@ The JSON header carries the metadata required to recover the payload; the
 ciphertext is AES-256-GCM output; the trailing padding is random filler used
 for file-size manipulation and is ignored on read.
 
-The header may also carry a ``kdf`` section. When present, the container key
-is derived from a passphrase instead of being read from a sidecar key file.
+Each container is protected by a randomly generated 256-bit AES key. The key
+is written to a sidecar ``.key`` file next to the container and is required to
+recover the payload.
 """
 
 from __future__ import annotations
@@ -22,15 +23,13 @@ import math
 from .constants import (
     GCM_TAG_SIZE,
     HEADER_SIZE,
-    KDF_NAME,
     MAGIC,
     MAX_HEADER_SIZE,
     NONCE_SIZE,
-    SALT_SIZE,
-    MAX_KDF_ITERATIONS,
-    MAX_DELAY_SECONDS,
 )
 from .encoding import b64_decode
+
+from ..common import MAX_DELAY_SECONDS
 
 REQUIRED_FIELDS = frozenset(
     {
@@ -43,35 +42,6 @@ REQUIRED_FIELDS = frozenset(
     }
 )
 
-OPTIONAL_FIELDS = frozenset({"kdf"})
-
-
-def _validate_kdf(kdf: object) -> None:
-    """Validate the key-derivation metadata of a container header."""
-
-    if not isinstance(kdf, dict):
-        raise ValueError("kdf metadata must be a JSON object")
-
-    if kdf.get("name") != KDF_NAME:
-        raise ValueError(f"unsupported key derivation function: {kdf.get('name')!r}")
-
-    
-    iterations = kdf.get("iterations")
-    
-    if type(iterations) is not int:
-        raise ValueError("kdf iteration count must be an integer")
-
-    if not 1 <= iterations <= MAX_KDF_ITERATIONS:
-        raise ValueError(
-            f"kdf iteration count must be between 1 and {MAX_KDF_ITERATIONS}"
-        )
-
-    salt = b64_decode(kdf.get("salt", ""), "kdf salt")
-    if len(salt) != SALT_SIZE:
-        raise ValueError(
-            f"invalid kdf salt length: expected {SALT_SIZE} bytes, got {len(salt)}"
-        )
-
 
 def validate_header(header: dict) -> None:
     """Validate the metadata required by an HBX1 container."""
@@ -81,7 +51,7 @@ def validate_header(header: dict) -> None:
             "container header is missing fields: " + ", ".join(sorted(missing))
         )
 
-    unknown = header.keys() - REQUIRED_FIELDS - OPTIONAL_FIELDS
+    unknown = header.keys() - REQUIRED_FIELDS
     if unknown:
         raise ValueError(
             "container header has unknown fields: " + ", ".join(sorted(unknown))
@@ -135,9 +105,6 @@ def validate_header(header: dict) -> None:
 
     if not isinstance(header["original_name"], str):
         raise ValueError("original_name must be a string")
-
-    if "kdf" in header:
-        _validate_kdf(header["kdf"])
 
 
 def _decode_header(raw_header: bytes) -> dict:
