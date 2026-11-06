@@ -1,8 +1,13 @@
-# Hidden-Bytes — Safe Educational Edition
+# Hidden-Bytes
 
-> **Purpose:** study binary containers, authenticated encryption, file-size manipulation, delayed self-extraction, file-level polymorphism, self-modification, integrity checking, and defensive detection in a controlled lab.
->
-> **Safety boundary:** this edition does not implement antivirus evasion, a working reverse shell, remote command execution, persistence, or any technique whose purpose is to defeat a security product. It does not claim to bypass Microsoft Defender, VirusTotal, or any other security product.
+Hidden-Bytes is a command-line toolkit of two programs built for the HiddenBytes assignment:
+
+- **`evasion`** — encrypts a target binary into an authenticated HBX1 container, pads it to a requested size, and packages it into a self-extracting runner that waits for a configured delay and then decrypts and launches the recovered program.
+- **`polymorphic`** — generates a self-modifying program that carries an encrypted payload (such as the reverse-shell payload in `lab/`), rewrites its own bytes on every run so its hash changes while its behaviour does not, and executes the payload.
+
+Jump straight to [§4 — evasion](#4-tool-1--evasion--hbx1-container) or [§5 — polymorphic](#5-tool-2--polymorphic-generator) to use the tools.
+
+> **Authorized use only.** These are offensive-security techniques intended for a controlled lab. Run them only inside the isolated Windows VM described in the subject, and only against files and hosts you own or are explicitly authorized to test. Misuse may be illegal.
 
 ## Contents
 
@@ -31,8 +36,6 @@ Hidden-Bytes is a command-line educational project with two separate programs:
 | `evasion` | Encrypt a file into an authenticated HBX1 container, add random padding, and package it into a self-extracting runner that waits for a delay and then launches the recovered program | `.hbx` container (+ `.key` file) **or** a self-extracting runner | **Yes, in `--mode runner`** — the runner decrypts the payload and launches it as a normal child process after the delay. In `--mode container` it only writes the recovered file to disk |
 | `polymorphic` | Generate a self-modifying program that carries an encrypted payload, rewrites its own source on every run, and executes the payload | A generated program (script or `.exe`) | **Yes** — the embedded payload is decrypted, integrity-checked and executed, with the operator's own arguments forwarded to it |
 
-The `evasion` name is retained because it comes from the assignment. The implementation is a **container, encryption, and delayed self-extraction demonstration**, not an antivirus-evasion mechanism.
-
 ### What this project demonstrates
 
 - AES-256-GCM authenticated encryption with a freshly generated random key.
@@ -45,15 +48,6 @@ The `evasion` name is retained because it comes from the assignment. The impleme
 - **File-level polymorphism**: a program that rewrites its own source on every run, so its hash changes while its behaviour does not.
 - **A reverse shell payload** that connects back to an address the operator chooses, and the defensive telemetry that such a connection produces.
 - How defenders can investigate unusual file structure and behavior.
-
-### What it deliberately does not implement
-
-- Bypassing or disabling endpoint protection.
-- A claimed Defender or VirusTotal detection-bypass percentage.
-- Persistence, privilege escalation, stealthy process injection, or anti-analysis tricks.
-- Any automatic target discovery, scanning, or spreading.
-
-These exclusions are part of the scope, not unfinished features to silently assume are present.
 
 ---
 ## HBX1 Encryption and Recovery Flow
@@ -129,7 +123,7 @@ flowchart TD
 
 ## 2. Subject and audit scope
 
-The original subject discusses binary manipulation, encryption, file-size changes, delayed behavior, polymorphism, reverse shells, and antivirus detection. This repository implements those techniques as controlled lab demonstrations.
+The subject asks for binary manipulation, encryption, file-size changes, delayed behavior, polymorphism, a reverse-shell payload, and testing against antivirus detection. The table below maps each subject/audit item to where it is implemented and how to demonstrate it during the audit.
 
 | Subject / audit topic | This implementation | How to demonstrate it |
 |---|---|---|
@@ -143,7 +137,7 @@ The original subject discusses binary manipulation, encryption, file-size change
 | Stable behavior | Same payload behaviour on every run | Capture output from multiple runs |
 | Reverse-shell connection | Implemented in `lab/reverse_shell_payload.py`; the target address and port are always operator-supplied | Start `lab/listener.py`, run the generated program with `--host`/`--port`, then type a command |
 | Native Windows PE output | Produced by `--build-exe` (PyInstaller) inside the VM | A `.py` file or `.exe` filename does not by itself establish PE validity; check the file type |
-| Defender / VirusTotal bypass | Not implemented or claimed | Record this as out of scope; do not report an unmeasured bypass rate |
+| Defender / VirusTotal testing | Measured in the VM against the real Defender and VirusTotal | Run `lab/defender_scan.ps1` and `lab/vt_check.py`; record the verdict and detection ratio actually observed |
 | Isolated Windows VM | Must be verified manually by the auditor | Capture hypervisor network and integration settings |
 
 **Important audit wording:** the delay is enforced by the **artifact itself** in runner mode — the produced file waits, then decrypts and launches the payload. The tool does not need to be running for the wait to happen. The delay is a *pre-execution* delay: the payload has not started yet when the wait ends.
@@ -386,7 +380,7 @@ The last row is the point worth making to the auditor: **the reverse shell is wh
 
 ## 4. Tool 1 — Evasion / HBX1 container
 
-> **Scope note:** `evasion` is the assignment's original tool name. This safe edition demonstrates authenticated encryption, binary-container parsing, padding, and delayed self-extraction. It does **not** bypass antivirus and does not implement a malware loader: the runner launches the recovered program as an ordinary child process, with no injection, no persistence, and no concealment.
+> **What this tool does:** encrypts a target file with AES-256-GCM, packages it into the HBX1 container format, pads it to a requested size, and builds a self-extracting runner that waits for a configured delay before decrypting and launching the recovered program. The runner launches the payload as an ordinary child process.
 
 ### 4.1 What the tool does
 
@@ -803,7 +797,7 @@ PADDING: Additional bytes that are ignored when reading the encrypted content.
 
 The `ciphertext_length` metadata field identifies the encrypted section's length, including the GCM authentication tag. The recovery code uses this length to avoid treating padding as ciphertext.
 
-The `kdf` block is not present in this safe edition; each container uses a fresh random key stored in a separate `.key` file.
+The `kdf` block is not used; each container uses a fresh random key stored in a separate `.key` file.
 
 ### 4.5.1 Runner layout
 
@@ -876,16 +870,16 @@ flowchart TD
     J --> K[Remove the temporary directory]
 ```
 
-### 4.8 What the tool does and does not prove
+### 4.8 What the tool demonstrates
 
 - **Encryption:** the input bytes are encrypted using AES-256-GCM.
 - **Authentication:** a wrong key or modified authenticated ciphertext fails authentication during recovery.
 - **Size manipulation:** padding makes the final artifact reach the requested size increase, exactly.
 - **Delay:** the wait is enforced **by the produced artifact** before the payload is launched, and it is also honored by `--decrypt`.
 - **Integrity evidence:** matching original/recovered SHA-256 hashes demonstrates successful byte-for-byte recovery.
-- **No antivirus bypass:** encryption, padding, file-size changes, and matching recovery hashes do not demonstrate Defender or VirusTotal evasion.
+- **Detection testing:** the Defender and VirusTotal results are measured on the artifact in the VM (see [§3.5](#what-the-audits-detection-checks-actually-require)); report the verdict and ratio you actually observe, not an assumed number.
 - **Key handling:** in `--mode container` the `.key` file is separate from the container but is saved beside it by default; protect it and do not commit it to version control. In `--mode runner` the random key is embedded in the artifact so it can recover its payload without a passphrase; a sidecar `.key` file is also written for CLI-based recovery.
-- **Execution transparency:** the runner launches the recovered program as an ordinary child process, prints what it is doing, and removes its temporary directory. It performs no injection, no persistence, and no concealment, and the delay is plainly visible to any behavioural monitor.
+- **Execution:** the runner launches the recovered program as a child process after the delay, prints what it is doing, and removes its temporary directory.
 
 ## 5. Tool 2 — Polymorphic generator
 
@@ -1177,9 +1171,9 @@ For each exercise, document:
 - What did the program verify?
 - What evidence proves that the original file was recovered correctly?
 - What should an endpoint or sandbox monitor?
-- Which original subject requirements are deliberately excluded from this safe edition?
+- What Defender / VirusTotal result did the artifact actually produce when measured?
 
-Do not claim a Defender or VirusTotal bypass based on file size, encryption, hash changes, or one scan result.
+Base any Defender or VirusTotal claim on a recorded scan result, not on file size, encryption, or hash changes alone.
 
 ---
 
@@ -1356,9 +1350,9 @@ Recommended controls include application control/allowlisting, least privilege, 
 
 ## 11. Limitations and known caveats
 
-1. **Not an antivirus bypass:** no Defender or VirusTotal evasion technique is implemented or claimed.
-2. **The runner launches the payload, it does not disguise it:** the recovered program is started as an ordinary child process of the runner. There is no process hollowing, no injection, no unlinking, and no attempt to hide the child. The delay is announced on stdout and observable to any behavioural monitor.
-3. **The reverse shell has no operational hardening:** it has no persistence, no privilege escalation, no lateral movement, no target discovery and no evasion. It reaches exactly one address, chosen on the command line. It is a teaching artifact, not a usable implant.
+1. **Detection results are measured, not engineered:** the tool encrypts, pads and packages the artifact, but it implements no dedicated anti-AV trick. The Defender and VirusTotal outcome depends on what a scanner sees in the artifact and must be measured in the VM — report the number you observe.
+2. **The runner launches the payload, it does not disguise it:** the recovered program is started as a child process of the runner. There is no process hollowing or injection, and the delay is announced on stdout.
+3. **The reverse shell is a lab payload:** it reaches exactly one address, chosen on the command line, with no persistence, privilege escalation, lateral movement or target discovery. It is a teaching artifact.
 4. **Not a native PE polymorpher:** the self-modification is a text substitution in a Python source file, and the `--build-exe` output is a PyInstaller bundle. Neither is machine-code mutation.
 5. **The self-modification needs a writable file:** if the generated program is read-only, the signature update fails and the hash stops changing. The program still runs.
 6. **Key protection is the user's responsibility:** the random AES-256 key is written to a sidecar `.key` file (container mode) or embedded in the runner artifact (runner mode). Protect the `.key` file and the runner artifact with access controls; anyone who can read them can recover the payload.
@@ -1373,7 +1367,7 @@ Recommended controls include application control/allowlisting, least privilege, 
 
 Binary encryption, file mutation, self-modification and reverse shells are dual-use. Test only in a written, authorized scope with owned samples and an isolated environment. Keep snapshots, use harmless payloads, restrict the reverse shell to a lab address you control, and restore the VM after the exercise.
 
-Do not disable endpoint protection, deploy obfuscated payloads, upload confidential third-party binaries to public multi-scanner services, or point the reverse shell at a machine you do not own or have written permission to test. Report findings honestly, distinguish implemented features from excluded requirements, and preserve the evidence needed for another reviewer to reproduce the results.
+Do not disable endpoint protection outside the lab, deploy these payloads on systems you do not control, upload confidential third-party binaries to public multi-scanner services, or point the reverse shell at a machine you do not own or have written permission to test. Report findings honestly and preserve the evidence needed for another reviewer to reproduce the results.
 
 ### Questions to prepare for the stakeholder / auditor
 
@@ -1388,5 +1382,5 @@ Do not disable endpoint protection, deploy obfuscated payloads, upload confident
 - Why can a whole-file hash change without a meaningful change in behavior?
 - How does a reverse shell work, and what does it look like to a defender?
 - Why does encrypting and randomising a file not stop the connection from being seen?
-- Which original subject requirements are not implemented, and why?
+- What Defender and VirusTotal results did the artifact produce, and what drives them?
 - What evidence supports each audit claim?
