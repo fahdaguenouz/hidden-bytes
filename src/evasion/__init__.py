@@ -44,6 +44,7 @@ from .runner import (
     is_runner,
     read_runner_container,
     read_runner_header,
+    read_runner_key,
     render_runner,
     write_launcher,
 )
@@ -79,6 +80,7 @@ __all__ = [
     "read_container_header",
     "read_runner_container",
     "read_runner_header",
+    "read_runner_key",
     "render_runner",
     "time",
     "validate_header",

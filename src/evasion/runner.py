@@ -320,6 +320,36 @@ def read_runner_header(path: Path) -> dict:
     return header
 
 
+_HBX_KEY_PATTERN = re.compile(rb'HBX_KEY = "([A-Za-z0-9+/=]*)"')
+
+
+def read_runner_key(path: Path) -> bytes | None:
+    """Return the AES-256 key embedded in a runner's launcher.
+
+    The launcher carries the random key in an ``HBX_KEY`` assignment, so the
+    runner can recover its own payload without a sidecar key file. Returns
+    ``None`` when no embedded key can be read (for example a native build whose
+    launcher is frozen and not extractable as text).
+    """
+
+    import base64
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            launcher = archive.read(LAUNCHER_NAME)
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+
+    match = _HBX_KEY_PATTERN.search(launcher)
+    if match is None or not match.group(1):
+        return None
+
+    try:
+        return base64.b64decode(match.group(1))
+    except (ValueError, TypeError):
+        return None
+
+
 def plan_runner(
     source: Path,
     add_size_mb: float,
@@ -362,9 +392,8 @@ def build_runner_file(
 ) -> dict:
     """Create the self-extracting runner as a single executable file.
 
-    The random encryption key is embedded in the runner so it can recover its
-    payload without a passphrase, and a sidecar ``.key`` file is written next
-    to the output so the container can also be recovered with ``--key``.
+    The random encryption key is embedded in the runner so it can recover and
+    launch its payload without a passphrase or any separate key file.
     """
 
     plan = plan_runner(source, add_size_mb, delay)
@@ -388,15 +417,6 @@ def build_runner_file(
         output.chmod(0o755)
     except OSError:
         pass
-
-    # Sidecar key file for CLI-based recovery of the container.
-    key_path = output.with_name(output.name + ".key")
-    key_path.write_text(b64_encode(plan["key"]) + "\n", encoding="ascii")
-    try:
-        key_path.chmod(0o600)
-    except OSError:
-        pass
-    plan["key_path"] = key_path
 
     plan["padding"] = padding
     plan["actual_size"] = len(archive)
@@ -463,8 +483,7 @@ def build_executable_from_source(
     execution of the executable. This makes the final size exact.
 
     The random encryption key is embedded in the launcher so the executable
-    can recover its payload without a passphrase, and a sidecar ``.key`` file
-    is written next to the output for CLI-based recovery.
+    can recover and launch its payload without a passphrase or key file.
     """
 
     from .crypto import build_payload
@@ -518,18 +537,9 @@ def build_executable_from_source(
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(built, output)
 
-        # Sidecar key file for CLI-based recovery of the container.
-        key_path = output.with_name(output.name + ".key")
-        key_path.write_text(b64_encode(key) + "\n", encoding="ascii")
-        try:
-            key_path.chmod(0o600)
-        except OSError:
-            pass
-
         return {
             "header": header,
             "key": key,
-            "key_path": key_path,
             "padding": padding,
             "overhead": base_size,
             "target_size": target_size,

@@ -206,8 +206,11 @@ def decrypt_file(
     """Recover the original plaintext from an HBX1 container or a runner.
 
     The recovered file is written to disk only; it is never executed by this
-    function. The sidecar key file (``--key``) is required to decrypt.
+    function. A runner carries its key embedded in its launcher, so no key
+    file is needed; a plain ``.hbx`` container needs its key via ``key_path``.
     """
+
+    from .runner import is_runner, read_runner_key
 
     source = source.resolve()
     output = output.resolve()
@@ -222,7 +225,15 @@ def decrypt_file(
         print(f"[INFO] Recovery delayed for {delay:g} second(s)...", flush=True)
         time.sleep(delay)
 
-    key = _resolve_key(header, key_path)
+    if is_runner(source):
+        key = read_runner_key(source)
+        if key is None:
+            raise ValueError(
+                "could not read the key embedded in this runner; a native "
+                "executable recovers its payload only by being run"
+            )
+    else:
+        key = _resolve_key(header, key_path)
     plaintext = decrypt_payload(header, ciphertext, key)
 
     output.parent.mkdir(parents=True, exist_ok=True)

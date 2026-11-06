@@ -284,18 +284,18 @@ def test_decrypt_recovers_the_payload_from_a_runner(tmp_path: Path) -> None:
     _write_payload(source)
 
     runner = tmp_path / "obfuscated.pyz"
-    plan = build_runner_file(
+    build_runner_file(
         source,
         runner,
         add_size_mb=0.01,
         delay=0,
     )
 
+    # The runner carries its key embedded, so recovery needs no key file.
     recovered = tmp_path / "recovered.py"
     decrypt_file(
         runner,
         recovered,
-        plan["key_path"],
     )
 
     assert recovered.read_bytes() == source.read_bytes()

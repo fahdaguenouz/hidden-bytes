@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 
 from ..common import delay_number, positive_number
-from .container import inspect_file, read_container_header
-from .crypto import decrypt_file, encrypt_file
+from .container import inspect_file
+from .crypto import decrypt_file
 from .runner import (
     build_executable_from_source,
     build_runner_file,
@@ -22,10 +22,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="evasion",
         description=(
-            "Authenticated binary packaging demonstration. The tool encrypts a "
-            "payload into an HBX1 container and can package it into a "
-            "self-extracting runner that waits for a delay before recovering "
-            "and launching the payload."
+            "Encrypt a target binary with AES-256-GCM, pad it to a requested "
+            "size, and package it into a self-extracting runner that waits for "
+            "a delay before decrypting and launching the recovered program. "
+            "A .exe output is built into a native Windows executable."
         ),
     )
 
@@ -33,12 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     operation.add_argument(
         "--encrypt",
         action="store_true",
-        help="encrypt/package a file into an HBX1 container or runner",
+        help="encrypt a file into a self-extracting runner",
     )
     operation.add_argument(
         "--decrypt",
         action="store_true",
-        help="recover a file from an HBX1 container or runner",
+        help="recover the original file from a runner without executing it",
     )
     operation.add_argument(
         "--inspect",
@@ -64,46 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=delay_number,
         default=101.0,
         metavar="SECONDS",
-        help="recovery delay stored in the container (default: 101 seconds)",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=("container", "runner"),
-        default="runner",
-        help=(
-            "output format: 'runner' packages a self-extracting launcher that "
-            "waits for the delay and then launches the payload; 'container' "
-            "writes a plain .hbx file (default: runner)"
-        ),
-    )
-    parser.add_argument(
-        "--key",
-        type=Path,
-        help="AES key file used with --decrypt (generated automatically on encrypt)",
+        help="execution delay enforced by the runner (default: 101 seconds)",
     )
     parser.add_argument(
         "--no-delay",
         action="store_true",
-        help="skip the stored recovery delay (useful for controlled testing)",
-    )
-    parser.add_argument(
-        "--build-exe",
-        action="store_true",
-        help=(
-            "package the runner as a single native executable with PyInstaller "
-            "(produces a .exe on Windows). Requires --mode runner."
-        ),
-    )
-    parser.add_argument(
-        "--no-native",
-        action="store_true",
-        help=(
-            "do not build a native executable even when the output name ends "
-            "in .exe. Without this flag, a .exe output is packaged into a "
-            "real native program, because a script renamed to .exe is not "
-            "executable on Windows and is not analysed as a program by a "
-            "scanner."
-        ),
+        help="skip the stored delay during --decrypt (useful for controlled testing)",
     )
 
     return parser
@@ -115,56 +81,36 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
     original_size = args.source.stat().st_size
 
-    if args.build_exe or (
-        args.output.suffix.lower() == ".exe" and not args.no_native
-    ):
-        # Package a self-extracting native executable with PyInstaller.
-        # This produces a real .exe on Windows, which is what the audit
-        # expects. Requires --mode runner.
-        if args.mode != "runner":
-            parser.error("--build-exe requires --mode runner")
-        plan = build_executable_from_source(
+    if args.output.suffix.lower() == ".exe":
+        # A .exe output is packaged into a real native executable with
+        # PyInstaller, because a script renamed to .exe does not run on
+        # Windows and is not analysed as a program by a scanner.
+        build_executable_from_source(
             source=args.source,
             output=args.output,
             add_size_mb=args.add_size,
             delay=args.delay,
         )
-        key_path = plan["key_path"]
-        artifact = "runner"
-    elif args.mode == "runner":
-        # Default: a self-extracting runner that recovers and launches the
-        # payload using the embedded random key (no passphrase required).
-        plan = build_runner_file(
-            source=args.source,
-            output=args.output,
-            add_size_mb=args.add_size,
-            delay=args.delay,
-        )
-        key_path = plan["key_path"]
-        artifact = "runner"
     else:
-        key_path = encrypt_file(
+        # A self-extracting runner that recovers and launches the payload
+        # using the embedded random key (no passphrase or key file needed).
+        build_runner_file(
             source=args.source,
             output=args.output,
             add_size_mb=args.add_size,
             delay=args.delay,
         )
-        artifact = "container"
 
     final_size = args.output.stat().st_size
 
     print("[OK] Encryption completed.")
     print(f"[INFO] Input:       {args.source}")
-    print(f"[INFO] {artifact.capitalize()}:   {args.output}")
-    print(f"[INFO] Key:         {key_path}")
+    print(f"[INFO] Runner:      {args.output}")
     print(f"[INFO] Original:    {original_size} bytes")
-    print(f"[INFO] {artifact.capitalize()}:   {final_size} bytes")
+    print(f"[INFO] Runner:      {final_size} bytes")
     print(f"[INFO] Added:       {final_size - original_size} bytes")
     print(f"[INFO] Delay:       {args.delay:g} second(s)")
-    if artifact == "runner":
-        print("[INFO] Run the produced executable to recover and launch the payload.")
-    else:
-        print("[INFO] The container is data only; nothing is executed.")
+    print("[INFO] Run the produced file to wait for the delay, decrypt and launch the payload.")
 
     return 0
 
@@ -173,11 +119,9 @@ def _run_decrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     if args.output is None:
         parser.error("--output is required with --decrypt")
 
-    
     decrypt_file(
         source=args.source,
         output=args.output,
-        key_path=args.key,
         no_delay=args.no_delay,
     )
 
