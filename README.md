@@ -33,7 +33,7 @@ Hidden-Bytes is a command-line educational project with two separate programs:
 
 | Program | Main purpose | Output | Does it execute the input file? |
 |---|---|---|---|
-| `evasion` | Encrypt a file into an authenticated HBX1 container, add random padding, and package it into a self-extracting runner that waits for a delay and then launches the recovered program | `.hbx` container (+ `.key` file) **or** a self-extracting runner | **Yes, in `--mode runner`** — the runner decrypts the payload and launches it as a normal child process after the delay. In `--mode container` it only writes the recovered file to disk |
+| `evasion` | Encrypt a target binary with AES-256-GCM into an HBX1 container, add random padding to a requested size, and package it into a self-extracting runner that waits for a delay and then decrypts and launches the recovered program | A self-extracting runner (a `.pyz` archive, or a native `.exe` when the output ends in `.exe`) | **Yes** — the runner waits for the delay, decrypts the embedded payload with its embedded key, and launches it as a child process. `--decrypt` can instead recover the payload to disk without executing it |
 | `polymorphic` | Generate a self-modifying program that carries an encrypted payload, rewrites its own source on every run, and executes the payload | A generated program (script or `.exe`) | **Yes** — the embedded payload is decrypted, integrity-checked and executed, with the operator's own arguments forwarded to it |
 
 ### What this project demonstrates
@@ -63,9 +63,9 @@ flowchart TD
     D --> E["Produce ciphertext and authentication tag"]
     E --> F["Produce JSON metadata"]
     F --> G["Build HBX1 container"]
-    G --> H["Add random padding"]
-    H --> I["Save container, or embed it in a runner"]
-    C --> J["Container mode: save separate .key file"]
+    G --> H["Embed the container and the key in a runner launcher"]
+    H --> I["Add random padding to the requested size"]
+    I --> K2["Write the self-extracting runner"]
 
     G -. "Container contains magic bytes, header length, metadata, ciphertext and tag" .-> K["HBX1 format"]
 ```
@@ -81,7 +81,7 @@ flowchart TD
     D -- "Inspect" --> E["Display metadata"]
     E --> F["Finish without decrypting"]
 
-    D -- "Decrypt" --> G["Load key file"]
+    D -- "Decrypt" --> G["Read the key embedded in the runner"]
     G --> H{"Delay enabled?"}
     H -- "Yes" --> I["Wait for configured delay"]
     H -- "No" --> J["Attempt authenticated decryption"]
@@ -110,10 +110,10 @@ flowchart TD
 
 - **Magic value:** identifies the container format.
 - **Header length:** a 4-byte unsigned, big-endian integer specifying the JSON metadata length in bytes.
-- **JSON metadata:** stores information such as the algorithm, nonce, original filename, original size, ciphertext length, recovery delay, and optionally the key-derivation parameters.
+- **JSON metadata:** stores information such as the algorithm, nonce, original filename, original size, ciphertext length, and recovery delay.
 - **Ciphertext and authentication tag:** AES-256-GCM encrypts the original bytes and produces a tag used to verify authenticity and integrity during decryption.
 - **Random padding:** increases the artifact size; it is not part of the original file and does not strengthen the encryption.
-- **Recovery delay:** the delay is stored in the metadata and enforced before the payload is recovered. In runner mode the *artifact* enforces it; in container mode the `--decrypt` command enforces it.
+- **Recovery delay:** the delay is stored in the metadata and enforced before the payload is recovered. The runner *artifact* enforces it when run, and `--decrypt` also honours it unless `--no-delay` is given.
 - **SHA-256 comparison:** matching hashes provide evidence that the recovered file is byte-for-byte identical to the original.
 
 **Note:** `--inspect` displays metadata without authenticating the ciphertext. Authentication is checked when decryption is attempted.
@@ -136,7 +136,7 @@ The subject asks for binary manipulation, encryption, file-size changes, delayed
 | Self-modification | Implemented: the program rewrites its own source on every run | Hash a generated program, run it, and hash it again |
 | Stable behavior | Same payload behaviour on every run | Capture output from multiple runs |
 | Reverse-shell connection | Implemented in `lab/reverse_shell_payload.py`; the target address and port are always operator-supplied | Start `lab/listener.py`, run the generated program with `--host`/`--port`, then type a command |
-| Native Windows PE output | Produced by `--build-exe` (PyInstaller) inside the VM | A `.py` file or `.exe` filename does not by itself establish PE validity; check the file type |
+| Native Windows PE output | Produced automatically when the `--output` name ends in `.exe` (PyInstaller) inside the VM | A `.py` file or `.exe` filename does not by itself establish PE validity; check the file type |
 | Defender / VirusTotal testing | Measured in the VM against the real Defender and VirusTotal | Run `lab/defender_scan.ps1` and `lab/vt_check.py`; record the verdict and detection ratio actually observed |
 | Isolated Windows VM | Must be verified manually by the auditor | Capture hypervisor network and integration settings |
 
@@ -304,12 +304,12 @@ python3 -m src.evasion \
 
 An output path ending in `.exe` is packaged into a real native executable
 automatically. The random AES-256 key is embedded in the executable, so no
-passphrase is required at run time. A sidecar `<output>.key` file is also
-written next to it for CLI-based recovery with `--decrypt --key`.
+passphrase or key file is required at run time. To recover the payload to disk
+without running it, use `--decrypt` (the key is read from the runner itself).
 
-Use `--no-native` if you deliberately want the Python-archive form under a
-`.exe` name, and `--build-exe` to force a native build for an output path that
-does not end in `.exe`.
+An output path that does not end in `.exe` produces a `.pyz` self-extracting
+runner instead — handy for a quick demonstration on Linux, where it needs only
+a Python 3 interpreter and no PyInstaller.
 
 #### Polymorphic — single-file executable
 
@@ -323,14 +323,10 @@ An output path ending in `.exe` is packaged into a real native executable
 automatically. The encrypted payload and the random key are embedded in the
 executable; no passphrase is required at run time.
 
-Use `--no-native` if you deliberately want the Python-archive form under a
-`.exe` name, and `--build-exe` to force a native build for an output path that
-does not end in `.exe`.
-
 
 ### What the audit's detection checks actually require
 
-Audit items 7 and 8 are **measurements, not features**. Nothing you write into the tool makes Defender miss a file; what decides the result is what the file looks like when a scanner opens it, and the only way to know is to measure it.
+Audit items 7 and 8 are measurements you run in the VM. Nothing you write into the tool makes Defender miss a file; what decides the result is what the file looks like when a scanner opens it, and the only way to know is to measure it.
 
 That splits the work in two:
 
@@ -384,28 +380,26 @@ The last row is the point worth making to the auditor: **the reverse shell is wh
 
 ### 4.1 What the tool does
 
-`src.evasion` has three modes:
+`src.evasion` has three operations:
 
-- `--encrypt`: reads a file as bytes, encrypts it using AES-256-GCM, and writes the result in one of two shapes:
-  - `--mode runner` (default): a **self-extracting runner**. One file that contains the launcher and the encrypted container. Running it waits for the recorded delay, decrypts the payload, writes it to a temporary directory, launches it, and removes the temporary directory.
-  - `--mode container`: a plain `.hbx` data container plus a `<output>.key` file. Nothing is executed; the file is only data.
-- `--inspect`: parses and displays the container metadata without decrypting its contents. Works on both a `.hbx` container and a runner.
-- `--decrypt`: reads a container (or a runner) and the key, waits for the recorded recovery delay unless `--no-delay` is supplied, authenticates and decrypts the ciphertext, then writes the recovered bytes to disk. It never executes the recovered file.
+- `--encrypt`: reads a file as bytes, encrypts it using AES-256-GCM, embeds the ciphertext and the random key in a launcher, pads the result to the requested size, and writes a **self-extracting runner**. When the `--output` name ends in `.exe` the runner is built into a native Windows executable; otherwise it is a `.pyz` archive. Running the runner waits for the recorded delay, decrypts the payload, writes it to a temporary directory, launches it, and removes the temporary directory.
+- `--inspect`: parses and displays the container metadata without decrypting its contents.
+- `--decrypt`: reads a runner, waits for the recorded recovery delay unless `--no-delay` is supplied, authenticates and decrypts the ciphertext using the key embedded in the runner, then writes the recovered bytes to disk. It never executes the recovered file.
 
 The optional `--add-size` value requests an increase in the **final artifact size**. The tool fills the artifact with random padding to reach the target size. Padding is not encrypted content and does not make the encryption stronger.
 
 ### 4.1.1 How the runner enforces the delay
 
-This is the key difference from a plain container, and it is what the audit's *"the program enforces the execution delay correctly"* check looks for.
+This is what the audit's *"the program enforces the execution delay correctly"* check looks for: the produced artifact itself waits before the payload runs.
 
 ```text
-evasion --encrypt target --output obfuscated
+evasion --encrypt target --output obfuscated.exe
         │
         ├─ encrypt payload  →  AES-256-GCM container (ciphertext + metadata)
-        ├─ embed container  →  inside the runner artifact
+        ├─ embed container + key  →  inside the runner artifact
         └─ store delay      →  in the container header (delay_seconds)
 
-$ ./obfuscated
+$ ./obfuscated.exe
 [INFO] Hidden-Bytes self-extracting runner.
 [INFO] Execution delayed by 101 seconds...     ← the artifact waits
 [INFO] Binary decrypted successfully.
@@ -416,7 +410,7 @@ The delay is **stored in the artifact and enforced by the artifact**. The tool d
 
 Two details make this work in practice:
 
-- **The key is not stored in the artifact.** The container is protected by a freshly generated random AES-256 key written to a sidecar `<output>.key` file. The artifact therefore cannot be unpacked without that key file.
+- **The artifact is self-contained.** The random AES-256 key is embedded in the launcher alongside the ciphertext, so the runner recovers its own payload with no separate key file and no passphrase.
 - **The runner has no third-party dependency.** The AES-256-GCM implementation is spliced into the generated launcher, so the artifact needs nothing but a Python 3 interpreter — no `pip install` in the lab VM.
 
 ### 4.2 CLI reference — all options
@@ -427,26 +421,22 @@ Display help:
 python3 -m src.evasion --help
 ```
 
-The module expects exactly one mode (`--encrypt`, `--decrypt`, or `--inspect`) and a positional input path called `source`.
+The module expects exactly one operation (`--encrypt`, `--decrypt`, or `--inspect`) and a positional input path called `source`.
 
 | Option | Meaning | Notes |
 |---|---|---|
-| `source` | Input file or HBX1 container | Required positional argument |
-| `--encrypt` | Encrypt/package the source file | Must be used with `--output` |
-| `--decrypt` | Recover a file from an HBX1 container or runner | Must be used with `--output` |
-| `--inspect` | Print container metadata | Does not decrypt the payload; works on containers and runners |
-| `--output PATH` | Destination path | Required for encryption and decryption |
-| `--mode {runner,container}` | Shape of the encrypted artifact | Default: `runner` (self-extracting). Use `container` for a plain `.hbx` data file |
+| `source` | Input file (encrypt) or runner (decrypt/inspect) | Required positional argument |
+| `--encrypt` | Encrypt the source file into a self-extracting runner | Must be used with `--output` |
+| `--decrypt` | Recover the original file from a runner, without executing it | Must be used with `--output` |
+| `--inspect` | Print runner/container metadata | Does not decrypt the payload |
+| `--output PATH` | Destination path | Required for `--encrypt` and `--decrypt`. An `.exe` name produces a native executable; any other name produces a `.pyz` runner |
 | `--add-size MB` | Requested increase in final artifact size | Help default: `0.01` MB; `1` requests 1 MiB (1,048,576 bytes); `101` requests 101 MiB |
-| `--delay SECONDS` | Recovery delay stored in the container | Help default: `101` seconds; set a small value such as `2` for a quick demo |
-| `--key PATH` | Key file to use during decryption | Only needed for `--mode container`; encryption generates `<output>.key` automatically |
-| `--no-delay` | Skip the stored delay during recovery | Useful for controlled tests; do not use it when demonstrating the delay |
-| `--build-exe` | Package the runner as a single native executable with PyInstaller | Produces a real `.exe` on Windows. Requires `--mode runner` and PyInstaller installed |
+| `--delay SECONDS` | Delay the runner enforces before launching the payload | Help default: `101` seconds; set a small value such as `2` for a quick demo |
+| `--no-delay` | Skip the stored delay during `--decrypt` | Useful for controlled tests; it does not affect the delay a runner enforces when run |
 
-The encryption key is a freshly generated 256-bit random key. It is written to a
-sidecar `<output>.key` file next to the container and is required for
-`--decrypt`. No passphrase is used and no `HBX_PASSPHRASE` environment variable
-is needed.
+The encryption key is a freshly generated 256-bit random key, embedded in the
+runner so it can recover its own payload. No key file, passphrase, or
+`HBX_PASSPHRASE` environment variable is used.
 
 The defaults shown above are those reported by this project's CLI help. Explicitly set `--add-size` and `--delay` in demonstrations so the behavior is reproducible.
 
