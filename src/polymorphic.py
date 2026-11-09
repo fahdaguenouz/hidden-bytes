@@ -207,6 +207,12 @@ def main():
         print("[ERROR] " + str(exc), file=sys.stderr)
         return 1
 
+    try:
+        code = compile(payload, "payload", "exec")
+    except SyntaxError as exc:
+        print("[ERROR] embedded payload is not valid Python: " + str(exc), file=sys.stderr)
+        return 1
+
     # The payload receives this program's own arguments, so the operator
     # can configure it (host, port, ...) at run time.
     namespace = {
@@ -214,7 +220,7 @@ def main():
         "__file__": "payload",
         "__builtins__": __builtins__,
     }
-    exec(compile(payload, "payload", "exec"), namespace)  # noqa: S102
+    exec(code, namespace)  # noqa: S102
 
     return 0
 
