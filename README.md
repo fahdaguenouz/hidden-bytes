@@ -458,40 +458,39 @@ wc -c sample.txt
 ```bash
 python3 -m src.evasion \
   --encrypt sample.txt \
-  --output sample.hbx \
+  --output sample.pyz \
   --add-size 1 \
-  --delay 2 \
-  --mode container
+  --delay 2
 ```
 
 Expected artifacts:
 
 ```text
 sample.txt       # original test file
-sample.hbx       # encrypted HBX1 data container
-sample.hbx.key   # generated key; keep it private
+sample.pyz       # self-extracting runner (carries the encrypted payload)
 ```
+
+The runner is self-contained: the random AES-256 key is embedded in it, so there is **no separate `.key` file** — the runner recovers its own payload. An output name ending in `.exe` is packaged into a native executable instead (see Section 4.3.2); any other name produces this Python-archive runner.
 
 Representative output from the tested 39-byte sample:
 
 ```text
 [OK] Encryption completed.
 [INFO] Input:       sample.txt
-[INFO] Container:   sample.hbx
-[INFO] Key:         .../sample.hbx.key
+[INFO] Runner:      sample.pyz
 [INFO] Original:    39 bytes
-[INFO] Container:   1048615 bytes
+[INFO] Runner:      1048615 bytes
 [INFO] Added:       1048576 bytes
 [INFO] Delay:       2 second(s)
-[INFO] The container is data only; nothing is executed.
+[INFO] Run the produced file to wait for the delay, decrypt and launch the payload.
 ```
 
-The exact key path depends on where the repository is located. `--add-size 1` requests 1 MiB (1,048,576 bytes) above the input size, so this sample's final container is 39 + 1,048,576 = **1,048,615 bytes**. Metadata and encryption overhead are accounted for inside that final-size target.
+`--add-size 1` requests 1 MiB (1,048,576 bytes) above the input size, so this sample's final runner is 39 + 1,048,576 = **1,048,615 bytes**. The launcher, metadata and encryption overhead are accounted for inside that final-size target.
 
-#### Step 3 — Inspect the container
+#### Step 3 — Inspect the runner
 
 ```bash
-python3 -m src.evasion --inspect sample.hbx
+python3 -m src.evasion --inspect sample.pyz
 ```
 
 The command prints metadata similar to:
@@ -499,11 +498,10 @@ The command prints metadata similar to:
 ```json
 {
   "algorithm": "AES-256-GCM",
-  "artifact_type": "container",
+  "artifact_size_bytes": 1048615,
+  "artifact_type": "runner",
   "ciphertext_length": 55,
   "container_ciphertext_bytes": 55,
-  "container_magic": "HBX1",
-  "container_size_bytes": 1048615,
   "delay_seconds": 2.0,
   "nonce": "<random Base64 value>",
   "original_name": "sample.txt",
@@ -513,16 +511,15 @@ The command prints metadata similar to:
 
 The nonce changes between encryption runs, so the example nonce above is a placeholder. Inspection shows metadata; it does not reveal the secret key and does not by itself validate the ciphertext's authenticity. Authentication is checked during decryption.
 
-#### Step 4 — Recover the original file
+#### Step 4 — Recover the original file (without running it)
 
 ```bash
 python3 -m src.evasion \
-  --decrypt sample.hbx \
-  --output recovered.txt \
-  --key sample.hbx.key
+  --decrypt sample.pyz \
+  --output recovered.txt
 ```
 
-Expected behavior for a container created with `--delay 2`:
+A runner carries its key embedded, so `--decrypt` needs no key file. Expected behavior for a runner created with `--delay 2`:
 
 ```text
 [INFO] Recovery delayed for 2 second(s)...
@@ -535,13 +532,12 @@ For a quick test that skips the configured wait:
 
 ```bash
 python3 -m src.evasion \
-  --decrypt sample.hbx \
+  --decrypt sample.pyz \
   --output recovered-no-delay.txt \
-  --key sample.hbx.key \
   --no-delay
 ```
 
-Use a different output filename if you want to keep both recovery results. `--no-delay` bypasses only the demonstration wait; it does not bypass encryption or authentication.
+Use a different output filename if you want to keep both recovery results. `--no-delay` bypasses only the demonstration wait; it does not bypass encryption or authentication. `--decrypt` recovers the payload to disk but never executes it — to watch the runner execute the payload itself, run the runner directly (Section 4.3.1).
 
 #### Step 5 — Verify recovery using SHA-256
 
@@ -549,14 +545,14 @@ Use a different output filename if you want to keep both recovery results. `--no
 sha256sum sample.txt recovered.txt
 ```
 
-In the test run shared during this project, both files produced the same hash:
+For the exact 39-byte sample from Step 1, both files produce the same hash:
 
 ```text
-06570c37ec2d0014c9bb0c10e6e4934f13de8adc8ca73b11107afdeebdca2310  sample.txt
-06570c37ec2d0014c9bb0c10e6e4934f13de8adc8ca73b11107afdeebdca2310  recovered.txt
+2aa96aef98b35be00d763d0090aed6df2bf99e49c830a72b34674cb06ed2a911  sample.txt
+2aa96aef98b35be00d763d0090aed6df2bf99e49c830a72b34674cb06ed2a911  recovered.txt
 ```
 
-That hash belongs to the exact file content used in that recorded run. If you create a new sample using the command above, the hash will be different, but the original and recovered hashes should still match. Matching SHA-256 hashes provide evidence that the recovered file is byte-for-byte identical to the original.
+That hash belongs to the exact sample content above. If you create a different sample, the hash will differ, but the original and recovered hashes should still match. Matching SHA-256 hashes provide evidence that the recovered file is byte-for-byte identical to the original.
 
 Alternative byte-for-byte comparison:
 
@@ -567,7 +563,7 @@ cmp sample.txt recovered.txt && echo 'Files match'
 Check file sizes:
 
 ```bash
-stat -c '%n: %s bytes' sample.txt sample.hbx recovered.txt
+stat -c '%n: %s bytes' sample.txt sample.pyz recovered.txt
 ```
 
 ### 4.3.1 The runner flow — the artifact enforces its own delay
@@ -602,10 +598,10 @@ Representative output:
 [INFO] Runner:      105906199 bytes
 [INFO] Added:       105906176 bytes
 [INFO] Delay:       101 second(s)
-[INFO] Run the runner to trigger the delayed recovery.
+[INFO] Run the produced file to wait for the delay, decrypt and launch the payload.
 ```
 
-The size grew by exactly 101 MiB (105,906,176 bytes) — the same accounting used for the container mode.
+The size grew by exactly 101 MiB (105,906,176 bytes) above the input size.
 
 #### Step 3 — Run it and watch the delay happen
 
@@ -715,30 +711,28 @@ Inspect the CLI options:
 python3 -m src.evasion --help
 ```
 
-Create a second container with a different delay and size increase:
+Create a second runner with a different delay and size increase:
 
 ```bash
 python3 -m src.evasion \
   --encrypt sample.txt \
-  --output sample-small.hbx \
+  --output sample-small.pyz \
   --add-size 0.1 \
-  --delay 5 \
-  --mode container
+  --delay 5
 ```
 
 Inspect it:
 
 ```bash
-python3 -m src.evasion --inspect sample-small.hbx
+python3 -m src.evasion --inspect sample-small.pyz
 ```
 
 Recover it without waiting (for a quick test):
 
 ```bash
 python3 -m src.evasion \
-  --decrypt sample-small.hbx \
+  --decrypt sample-small.pyz \
   --output recovered-small.txt \
-  --key sample-small.hbx.key \
   --no-delay
 ```
 
@@ -779,7 +773,7 @@ MAGIC: Identifies the file as an HBX1 container.
 
 HEADER LENGTH: Tells the program how many bytes to read for the JSON metadata.
 
-JSON HEADER: Contains information such as the original filename, original size, encryption algorithm, nonce, and KDF settings.
+JSON HEADER: Contains information such as the original filename, original size, encryption algorithm, nonce, recovery delay, and ciphertext length.
 
 CIPHERTEXT: Contains the encrypted payload.
 
@@ -787,11 +781,11 @@ PADDING: Additional bytes that are ignored when reading the encrypted content.
 
 The `ciphertext_length` metadata field identifies the encrypted section's length, including the GCM authentication tag. The recovery code uses this length to avoid treating padding as ciphertext.
 
-The `kdf` block is not used; each container uses a fresh random key stored in a separate `.key` file.
+There is no key-derivation (`kdf`) block: each encryption uses a fresh random AES-256 key. The CLI embeds that key inside the runner artifact (next section), so no separate key file is produced.
 
 ### 4.5.1 Runner layout
 
-In runner mode the container is embedded in a single file:
+The container shown above is embedded in a single self-extracting file:
 
 ```text
 +-----------------------------------------+
@@ -821,11 +815,10 @@ flowchart TD
     C --> D[Encrypt bytes with AES-256-GCM]
     D --> E[Create metadata: name, size, nonce, delay, ciphertext length]
     E --> F[Build HBX1: magic + header length + metadata + ciphertext]
-    F --> G[Append random padding to requested final size]
-    G --> H[Write sample.hbx]
-    C --> I[Write separate sample.hbx.key]
-    H --> J[Container and key are ready]
-    I --> J
+    F --> G[Render launcher with the embedded random key]
+    G --> H[Zip launcher + container + random padding to the target size]
+    H --> I[Write self-extracting runner: sample.pyz]
+    I --> J[Runner is ready: key embedded, no separate key file]
 ```
 
 ### 4.7 Inspection and recovery flow diagram
@@ -837,7 +830,7 @@ flowchart TD
     C --> D[Display metadata for --inspect]
     C --> E[For --decrypt: read declared ciphertext bytes]
     E --> F[Wait for stored delay unless --no-delay]
-    F --> G[Load the supplied key]
+    F --> G[Load the key embedded in the runner]
     G --> H{AES-GCM authentication succeeds?}
     H -- No --> I[Report decryption/authentication failure]
     H -- Yes --> J[Check recovered byte length]
@@ -868,7 +861,7 @@ flowchart TD
 - **Delay:** the wait is enforced **by the produced artifact** before the payload is launched, and it is also honored by `--decrypt`.
 - **Integrity evidence:** matching original/recovered SHA-256 hashes demonstrates successful byte-for-byte recovery.
 - **Detection testing:** the Defender and VirusTotal results are measured on the artifact in the VM (see [§3.5](#what-the-audits-detection-checks-actually-require)); report the verdict and ratio you actually observe, not an assumed number.
-- **Key handling:** in `--mode container` the `.key` file is separate from the container but is saved beside it by default; protect it and do not commit it to version control. In `--mode runner` the random key is embedded in the artifact so it can recover its payload without a passphrase; a sidecar `.key` file is also written for CLI-based recovery.
+- **Key handling:** the random AES-256 key is embedded in the runner artifact so it can recover its payload without a passphrase or separate key file. The artifact therefore *is* the secret — anyone who can read the runner can recover the payload, so protect the artifact with access controls and do not commit it to version control.
 - **Execution:** the runner launches the recovered program as a child process after the delay, prints what it is doing, and removes its temporary directory.
 
 ## 5. Tool 2 — Polymorphic generator
@@ -1110,13 +1103,13 @@ Use harmless text samples first. These commands are intended to make the behavio
 ### Exercise A — Encryption, padding, recovery, and integrity
 
 1. Create `sample.txt` containing a short message.
-2. Encrypt it into `sample.hbx` with a short delay such as five seconds (`--mode container`).
+2. Encrypt it into a runner `sample.pyz` with a short delay such as five seconds (`--add-size 1 --delay 5`).
 3. Inspect the header with `--inspect`.
-4. Record the original and container file sizes.
-5. Recover to `recovered.txt`.
+4. Record the original and runner file sizes.
+5. Recover to `recovered.txt` with `--decrypt --no-delay`.
 6. Compare the original and recovered SHA-256 values.
-7. Repeat recovery with a deliberately incorrect key file and record that authentication fails. Do not overwrite the original sample during this test.
-8. Restore the correct key and verify recovery succeeds again.
+7. Flip a byte inside the runner's ciphertext region with a hex editor, attempt recovery, and record that AES-GCM authentication fails. Do not overwrite the original sample during this test.
+8. Recover from the untouched runner again and verify recovery succeeds.
 
 ### Exercise A2 — Delayed self-extraction (the runner)
 
@@ -1173,11 +1166,11 @@ Base any Defender or VirusTotal claim on a recorded scan result, not on file siz
 
 AES is a symmetric cipher. “256” refers to the key size in bits. GCM is an authenticated-encryption mode: it encrypts the plaintext and produces an authentication tag. During decryption, a wrong key or modified authenticated ciphertext should cause authentication to fail rather than produce accepted plaintext.
 
-The container stores the nonce and metadata, but not the AES key. In `--mode container` the key is stored separately in `<output>.key`. In `--mode runner` the random key is embedded in the artifact so it can recover its payload without a passphrase; a sidecar `.key` file is also written for CLI-based recovery.
+The container stores the nonce and metadata, but not the AES key. The CLI embeds the random key inside the runner artifact so it can recover its own payload without a passphrase or separate key file.
 
 ### Random key generation
 
-Each encryption generates a fresh 256-bit random AES key using `os.urandom`. The key is never derived from a passphrase or any user-supplied input. It is written to a sidecar `.key` file (container mode) or embedded in the runner artifact (runner mode), and is required to recover the payload.
+Each encryption generates a fresh 256-bit random AES key using `os.urandom`. The key is never derived from a passphrase or any user-supplied input. It is embedded in the runner artifact and is required to recover the payload.
 
 ### Dependency-free AES in the runner
 
@@ -1264,13 +1257,13 @@ Use this checklist during the audit. Mark an item only after collecting evidence
 
 - [ ] **Setup:** record Python version and installed dependencies.
 - [ ] **Isolation:** capture the VM's network mode and disabled integration features.
-- [ ] **Encryption:** show the generated `.hbx` and separate `.key` files, or the runner.
+- [ ] **Encryption:** show the generated runner artifact (`.pyz` on Linux, `.exe` on the Windows VM).
 - [ ] **Container structure:** capture `--inspect` output and explain each field.
 - [ ] **Size:** record the original and final byte lengths and verify the configured increase is exact.
 - [ ] **Delay:** demonstrate a non-zero delay **in the produced artifact** (runner mode), and time it.
 - [ ] **Recovery:** compare original and recovered SHA-256 hashes.
 - [ ] **Integrity failure:** record that recovery with an incorrect key or tampered ciphertext fails authentication.
-- [ ] **Key protection:** show that the runner's embedded key is required for recovery, and that the sidecar `.key` file protects the container in `--mode container`.
+- [ ] **Key protection:** explain that the runner's embedded key is required for recovery, so the artifact itself is the secret and must be protected with access controls.
 - [ ] **Polymorphism:** show that two independently generated variants have different hashes.
 - [ ] **Self-modification:** show a generated program's hash before and after execution.
 - [ ] **Stable output:** preserve output from multiple runs and show that the message stays the same.
@@ -1332,7 +1325,7 @@ The project illustrates patterns that defenders can investigate, but no single i
 - **A launcher that does not match its own extension:** a Python zipapp renamed to `.exe`, or a PyInstaller bundle whose content is mostly padding, will not match what a file-type detector expects. Note that this is a *detection opportunity for defenders*, not a technique for evading them.
 - **Changing hashes:** exact hashes identify exact byte sequences; inert changes can produce a new hash without changing visible behavior. Combine hashes with normalized/fuzzy similarity, signing status, code structure, process behavior, memory observations, and network telemetry.
 - **Unexpected network activity:** monitor outbound connections from applications that do not normally need them, especially when combined with suspicious child processes or command interpreters.
-- **Key handling:** protect key files with access controls; never commit real keys to source control or include them in audit screenshots. In runner mode the key is embedded in the artifact; in `--mode container` the key is in the separate `.key` file.
+- **Key handling:** the key is embedded in the runner artifact, so the artifact itself is the secret. Protect it with access controls; never commit runners to source control or include their contents in audit screenshots.
 
 Recommended controls include application control/allowlisting, least privilege, egress filtering, endpoint detection and response, protected logging, rapid patching, and isolated analysis environments.
 
@@ -1345,7 +1338,7 @@ Recommended controls include application control/allowlisting, least privilege, 
 3. **The reverse shell is a lab payload:** it reaches exactly one address, chosen on the command line, with no persistence, privilege escalation, lateral movement or target discovery. It is a teaching artifact.
 4. **Not a native PE polymorpher:** the self-modification is a text substitution in a Python source file, and the `--build-exe` output is a PyInstaller bundle. Neither is machine-code mutation.
 5. **The self-modification needs a writable file:** if the generated program is read-only, the signature update fails and the hash stops changing. The program still runs.
-6. **Key protection is the user's responsibility:** the random AES-256 key is written to a sidecar `.key` file (container mode) or embedded in the runner artifact (runner mode). Protect the `.key` file and the runner artifact with access controls; anyone who can read them can recover the payload.
+6. **Key protection is the user's responsibility:** the random AES-256 key is embedded in the runner artifact. Protect the runner with access controls; anyone who can read it can recover the payload.
 7. **The `--build-exe` output has a fixed runtime overhead:** the bundled Python interpreter adds roughly 9–15 MB, so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
 8. **Manual isolation verification:** source code and README instructions cannot prove the VM is isolated.
 9. **Audit results must be measured:** do not claim a detection percentage or a pass without recorded, reproducible evidence.
