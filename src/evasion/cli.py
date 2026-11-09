@@ -79,6 +79,9 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     if args.output is None:
         parser.error("--output is required with --encrypt")
 
+    if args.source.resolve() == args.output.resolve():
+        parser.error("source and output cannot be the same file")
+
     original_size = args.source.stat().st_size
 
     if args.output.suffix.lower() == ".exe":
