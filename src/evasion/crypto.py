@@ -165,7 +165,9 @@ def _resolve_key(header: dict, key_path: Path | None) -> bytes:
 
     if key_path is None:
         raise ValueError(
-            "a key file is required to recover this container; use --key"
+            "cannot recover this file: it is a standalone encrypted container, "
+            "not a self-extracting runner. Only runners carry the key needed "
+            "to decrypt them."
         )
 
     return load_key(key_path)
