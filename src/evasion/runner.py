@@ -165,19 +165,30 @@ def main():
         except OSError:
             pass
 
-        print("[INFO] Target program executed.", flush=True)
-
         if target.endswith((".py", ".pyw")):
             # In a frozen bundle sys.executable is the bundle itself, so a
             # Python payload is executed in-process instead of being spawned.
             if getattr(sys, "frozen", False):
+                print("[INFO] Target program executed.", flush=True)
                 runpy.run_path(target, run_name="__main__")
                 return 0
             command = [sys.executable, target]
         else:
             command = [target]
 
-        return subprocess.run(command).returncode
+        try:
+            process = subprocess.run(command)
+        except OSError as exc:
+            # The recovered payload is not executable on this system (for
+            # example a data file, or a binary built for another platform).
+            print(
+                "[ERROR] could not execute the recovered payload: " + str(exc),
+                file=sys.stderr,
+            )
+            return 1
+
+        print("[INFO] Target program executed.", flush=True)
+        return process.returncode
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
