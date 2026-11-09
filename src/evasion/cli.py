@@ -88,6 +88,17 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
         # A .exe output is packaged into a real native executable with
         # PyInstaller, because a script renamed to .exe does not run on
         # Windows and is not analysed as a program by a scanner.
+        if sys.platform != "win32":
+            # PyInstaller builds for the host OS, so on a non-Windows host the
+            # produced ".exe" is a native binary for THIS platform, not a
+            # Windows PE. Warn instead of failing: a local test build is still
+            # useful, and the audit's real .exe is built inside the Windows VM.
+            print(
+                "[WARN] Building a .exe on a non-Windows host: the result is a "
+                "native binary for this OS, not a Windows PE, and will not run "
+                "on Windows. Build inside the Windows VM for a real .exe.",
+                file=sys.stderr,
+            )
         build_executable_from_source(
             source=args.source,
             output=args.output,
