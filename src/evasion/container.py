@@ -9,12 +9,14 @@ ciphertext is AES-256-GCM output; the trailing padding is random filler used
 for file-size manipulation and is ignored on read.
 
 Each container is protected by a randomly generated 256-bit AES key. The key
-is written to a sidecar ``.key`` file next to the container and is required to
-recover the payload.
+is never stored inside the container itself: a self-extracting runner embeds it
+in its launcher, while a standalone ``.hbx`` container keeps it in a sidecar
+``.key`` file. Either way the key is required to recover the payload.
 """
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import BinaryIO
@@ -84,17 +86,18 @@ def validate_header(header: dict) -> None:
         )
     if original_size < 0:
         raise ValueError("original_size cannot be negative")
-    
+
+
+    if not math.isfinite(delay_seconds):
+        raise ValueError("delay_seconds must be finite")
+
     if delay_seconds < 0:
         raise ValueError("delay_seconds cannot be negative")
-    
+
     if delay_seconds > MAX_DELAY_SECONDS:
         raise ValueError(
             f"delay_seconds cannot exceed {MAX_DELAY_SECONDS} seconds"
         )
-    
-    if not math.isfinite(delay_seconds):
-        raise ValueError("delay_seconds must be finite")
 
     nonce = b64_decode(header["nonce"], "nonce")
     if len(nonce) != NONCE_SIZE:
@@ -123,42 +126,6 @@ def _decode_header(raw_header: bytes) -> dict:
     return header
 
 
-def parse_container(data: bytes) -> tuple[dict, bytes]:
-    """Parse an HBX1 container held in memory and return ``(header, ciphertext)``."""
-
-    if len(data) < len(MAGIC) + HEADER_SIZE.size:
-        raise ValueError("invalid HBX1 container: truncated header")
-    
-    if data[:len(MAGIC)] != MAGIC:   
-        raise ValueError("invalid HBX1 container: incorrect magic bytes")
-
-    offset = len(MAGIC)
-    header_length = HEADER_SIZE.unpack(
-        data[offset:offset + HEADER_SIZE.size]
-    )[0]
-    offset += HEADER_SIZE.size
-
-    if header_length > MAX_HEADER_SIZE:
-        raise ValueError(f"header is too large: {header_length} bytes")
-
-    raw_header = data[offset:offset + header_length]
-    if len(raw_header) != header_length:
-        raise EOFError("unexpected end of file: truncated header")
-
-    header = _decode_header(raw_header)
-
-    offset += header_length
-    ciphertext_length = header["ciphertext_length"]
-    ciphertext = data[offset:offset + ciphertext_length]
-    if len(ciphertext) != ciphertext_length:
-        raise EOFError(
-            f"unexpected end of file: expected {ciphertext_length} bytes, "
-            f"received {len(ciphertext)}"
-        )
-
-    return header, ciphertext
-
-
 def _read_exact(handle: BinaryIO, size: int) -> bytes:
     """Read exactly ``size`` bytes or raise EOFError."""
     if size < 0:
@@ -173,25 +140,43 @@ def _read_exact(handle: BinaryIO, size: int) -> bytes:
     return data
 
 
+def _read_header_from_handle(handle: BinaryIO) -> dict:
+    """Read, size-guard and validate the HBX1 header from an open handle.
+
+    This is the single place the magic check, the big-endian length field and
+    the ``MAX_HEADER_SIZE`` guard live, shared by the in-memory parser and the
+    file readers so the rules cannot drift apart between them.
+    """
+
+    if _read_exact(handle, len(MAGIC)) != MAGIC:
+        raise ValueError("invalid HBX1 container: incorrect magic bytes")
+
+    header_length = HEADER_SIZE.unpack(_read_exact(handle, HEADER_SIZE.size))[0]
+
+    if header_length > MAX_HEADER_SIZE:
+        raise ValueError(f"header is too large: {header_length} bytes")
+
+    raw_header = _read_exact(handle, header_length)
+    return _decode_header(raw_header)
+
+
+def parse_container(data: bytes) -> tuple[dict, bytes]:
+    """Parse an HBX1 container held in memory and return ``(header, ciphertext)``."""
+
+    handle = io.BytesIO(data)
+    header = _read_header_from_handle(handle)
+    ciphertext = _read_exact(handle, header["ciphertext_length"])
+
+    return header, ciphertext
+
+
 def read_container(source: Path) -> tuple[dict, bytes]:
     """Read an HBX1 container and return ``(header, ciphertext)``."""
     if not source.is_file():
         raise ValueError(f"input file does not exist: {source}")
 
     with source.open("rb") as handle:
-        if _read_exact(handle, len(MAGIC)) != MAGIC:
-            raise ValueError("invalid HBX1 container: incorrect magic bytes")
-
-        header_length = HEADER_SIZE.unpack(
-            _read_exact(handle, HEADER_SIZE.size)
-        )[0]
-
-        if header_length > MAX_HEADER_SIZE:
-            raise ValueError(f"header is too large: {header_length} bytes")
-
-        raw_header = _read_exact(handle, header_length)
-        header = _decode_header(raw_header)
-
+        header = _read_header_from_handle(handle)
         ciphertext = _read_exact(handle, header["ciphertext_length"])
 
     return header, ciphertext
@@ -207,28 +192,23 @@ def read_container_header(source: Path) -> dict:
         raise ValueError(f"input file does not exist: {source}")
 
     with source.open("rb") as handle:
-        if _read_exact(handle, len(MAGIC)) != MAGIC:
-            raise ValueError("invalid HBX1 container: incorrect magic bytes")
-
-        header_length = HEADER_SIZE.unpack(
-            _read_exact(handle, HEADER_SIZE.size)
-        )[0]
-
-        if header_length > MAX_HEADER_SIZE:
-            raise ValueError(f"header is too large: {header_length} bytes")
-
-        raw_header = _read_exact(handle, header_length)
-
-    return _decode_header(raw_header)
+        return _read_header_from_handle(handle)
 
 
 def inspect_file(source: Path) -> dict:
+    from .runner import is_runner
+
     header = read_container_header(source)
 
     result = dict(header)
-    result["artifact_type"] = "container"
-    result["container_magic"] = MAGIC.decode("ascii")
     result["container_ciphertext_bytes"] = header["ciphertext_length"]
-    result["container_size_bytes"] = source.stat().st_size
+
+    if is_runner(source):
+        result["artifact_type"] = "runner"
+        result["artifact_size_bytes"] = source.stat().st_size
+    else:
+        result["artifact_type"] = "container"
+        result["container_magic"] = MAGIC.decode("ascii")
+        result["container_size_bytes"] = source.stat().st_size
 
     return result
