@@ -415,8 +415,21 @@ def build_runner_file(
     archive = _build_archive(plan["launcher"], plan["body"], padding)
 
     if len(archive) != plan["requested_size"]:
+        # Adding a padding member costs a fixed zip overhead; correct for it.
         overhead = len(archive) - base_size - padding
         padding = plan["requested_size"] - base_size - overhead
+        if padding <= 0:
+            # The requested size sits in the unreachable band between the
+            # no-padding minimum and the smallest size a padding block can
+            # produce (the block's fixed overhead cannot be shrunk away).
+            raise ValueError(
+                "requested final size cannot be produced exactly: sizes "
+                f"between {base_size} bytes (no padding) and "
+                f"{base_size + overhead + 1} bytes are unreachable because the "
+                f"padding block adds a fixed {overhead}-byte overhead. Request "
+                f"exactly {base_size} bytes, or at least "
+                f"{base_size + overhead + 1} bytes."
+            )
         archive = _build_archive(plan["launcher"], plan["body"], padding)
 
     output.parent.mkdir(parents=True, exist_ok=True)
