@@ -648,7 +648,33 @@ grep -c "Hello, World!" obfuscated.pyz || echo "plaintext NOT found in the artif
 
 The payload does not appear as plaintext in the artifact: it is AES-256-GCM ciphertext inside the container.
 
-#### Step 6 — Recover the payload from a runner without running it
+#### Step 6 — Look inside the runner (see how it works)
+
+A `.pyz` runner is just a zip archive, so you can open it and read the launcher
+source that runs on the target. This is the clearest way to *see* the runner:
+
+```bash
+mkdir peek
+cd peek
+unzip ../obfuscated.pyz        # → __main__.py  payload.hbx  (+ padding.bin)
+less __main__.py               # the filled-in launcher: HBX_KEY = "..." and the spliced-in AES
+cd ..
+```
+
+Inside `__main__.py` you will find the embedded `HBX_KEY`, the dependency-free
+AES-256-GCM implementation, and the `main()` that waits for the delay, decrypts,
+and launches the payload. `payload.hbx` is the encrypted container; `padding.bin`
+is the random filler that sets the exact size.
+
+> **Note:** `unzip` reports `warning: … extra bytes at beginning` — that is the
+> shebang line prepended to the archive, and is harmless.
+>
+> **Run `python3 -m src.evasion` from the repository root**, not from inside
+> `peek/`. The `-m` form resolves the `src` package relative to the current
+> directory, so running it elsewhere fails with `No module named 'src'`. (The
+> `./evasion` launcher script works from any directory.)
+
+#### Step 7 — Recover the payload from a runner without running it
 
 ```bash
 python3 -m src.evasion \
