@@ -126,7 +126,33 @@
   .nav a{flex:1;text-align:center;border:1px solid var(--line);border-radius:10px;padding:11px;color:var(--cyan);
     text-decoration:none;font-size:13px;background:var(--panel);}
   .nav a:hover{background:var(--panel2);}
-  @media(max-width:640px){.lab,.feat{grid-template-columns:1fr;}}
+  /* container vs runner */
+  .toggle{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
+  .tg{flex:1 1 200px;font-family:var(--sans);font-size:14px;font-weight:600;cursor:pointer;border-radius:10px;
+    padding:12px 14px;border:1px solid var(--line);background:var(--bg2);color:var(--soft);transition:.15s;text-align:left;}
+  .tg span{font-family:var(--mono);font-size:11px;opacity:.8;display:block;margin-top:2px;}
+  .tg:hover{border-color:var(--cyan);}
+  .tg.active{border-color:var(--cyan);color:var(--cyan);background:rgba(47,224,208,.08);}
+  .cvr{display:grid;grid-template-columns:1.2fr 1fr;gap:18px;align-items:start;}
+  .filebox{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--bg2);}
+  .filebox .fhead{font-family:var(--mono);font-size:12px;color:var(--soft);padding:9px 12px;border-bottom:1px solid var(--line);
+    display:flex;justify-content:space-between;gap:8px;}
+  .layer{padding:13px 14px;border-bottom:1px solid var(--line);font-size:13px;}
+  .layer:last-child{border-bottom:none;}
+  .layer small{color:var(--soft);display:block;margin-top:2px;}
+  .layer.opener{background:rgba(47,224,208,.07);}
+  .layer.body{background:rgba(75,143,240,.07);}
+  .layer.pad{background:rgba(100,120,143,.12);}
+  .keybadge{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;font-weight:700;
+    background:var(--amber-dim);color:var(--amber);border:1px solid rgba(240,169,59,.3);padding:3px 9px;border-radius:999px;margin-top:8px;}
+  .sep-key{border:1px dashed var(--amber);border-radius:12px;padding:13px 14px;margin-top:12px;background:rgba(240,169,59,.05);
+    font-family:var(--mono);font-size:13px;color:var(--amber);}
+  .facts2{display:flex;flex-direction:column;gap:10px;}
+  .fact{border:1px solid var(--line);border-radius:10px;padding:11px 14px;background:var(--panel);}
+  .fact .q{font-family:var(--mono);font-size:11px;color:var(--soft);text-transform:uppercase;letter-spacing:.06em;}
+  .fact .a{font-size:13.5px;margin-top:3px;}
+  .fact .a.yes{color:var(--green);} .fact .a.no{color:var(--red);}
+  @media(max-width:640px){.lab,.feat,.cvr{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -194,8 +220,20 @@
     <div class="explain" id="explain"></div>
   </div>
 
-  <!-- 3. run simulator -->
-  <h2><span class="idx">03</span> Run it (simulated)</h2>
+  <!-- 3. container vs runner -->
+  <h2><span class="idx">03</span> Container vs runner — where it lives</h2>
+  <p class="sub">Same encrypted body inside both. The difference is whether a self-opening wrapper is
+     around it — and where the key hides. Flip between them:</p>
+  <div class="panel">
+    <div class="toggle">
+      <button class="tg" data-v="runner">🎁 Self-extracting runner <span>.pyz / .exe</span></button>
+      <button class="tg" data-v="container">📦 Plain container <span>.hbx</span></button>
+    </div>
+    <div class="cvr" id="cvr"></div>
+  </div>
+
+  <!-- 4. run simulator -->
+  <h2><span class="idx">04</span> Run it (simulated)</h2>
   <p class="sub">Running the artifact triggers the timer, then it decrypts itself and launches the file.
      This is a sped-up simulation of the real output — the delay uses your slider value.</p>
   <div class="panel">
@@ -211,7 +249,7 @@
   </div>
 
   <!-- 4. four features -->
-  <h2><span class="idx">04</span> The four stealth moves</h2>
+  <h2><span class="idx">05</span> The four stealth moves</h2>
   <p class="sub">Each maps to a concrete part of the code.</p>
   <div class="feat">
     <div class="fcard"><div class="ico">🔒</div><h3>Encrypt</h3>
@@ -341,6 +379,48 @@
   }
   runBtn.addEventListener("click",()=>run(true));
   decBtn.addEventListener("click",()=>run(false));
+
+  // ---- container vs runner ----
+  const cvr=$("cvr");
+  const VIEWS={
+    runner:`
+      <div class="filebox">
+        <div class="fhead"><span>ONE file · packed.pyz</span><span>runs itself ▶</span></div>
+        <div class="layer opener"><b>🚪 Launcher (the opener)</b>
+          <small>a small program that unlocks and launches the payload</small>
+          <span class="keybadge">🔑 secret key embedded HERE</span></div>
+        <div class="layer body"><b>🔒 HBX1 body</b><small>magic · header · ciphertext + tag</small></div>
+        <div class="layer pad"><b>🧱 padding</b><small>random filler to the exact size</small></div>
+      </div>
+      <div class="facts2">
+        <div class="fact"><div class="q">where is the key?</div><div class="a">inside the launcher</div></div>
+        <div class="fact"><div class="q">can it run itself?</div><div class="a yes">yes — waits, decrypts, launches</div></div>
+        <div class="fact"><div class="q">who makes it?</div><div class="a">the CLI <code>--encrypt</code></div></div>
+        <div class="fact"><div class="q">read with</div><div class="a">parse_container()</div></div>
+      </div>`,
+    container:`
+      <div>
+        <div class="filebox">
+          <div class="fhead"><span>DATA file · sample.hbx</span><span>inert ✋</span></div>
+          <div class="layer body"><b>🔒 HBX1 body</b><small>magic · header · ciphertext + tag</small></div>
+          <div class="layer pad"><b>🧱 padding</b><small>random filler to the exact size</small></div>
+        </div>
+        <div class="sep-key">🔑 sample.hbx.key
+          <small style="display:block;margin-top:3px;color:var(--soft);font-family:var(--sans)">a SEPARATE file — without it, the container can't be opened</small></div>
+      </div>
+      <div class="facts2">
+        <div class="fact"><div class="q">where is the key?</div><div class="a">a separate .key file</div></div>
+        <div class="fact"><div class="q">can it run itself?</div><div class="a no">no — data only, does nothing alone</div></div>
+        <div class="fact"><div class="q">who makes it?</div><div class="a">library/API only (not the CLI)</div></div>
+        <div class="fact"><div class="q">read with</div><div class="a">read_container()</div></div>
+      </div>`
+  };
+  function showCVR(v){
+    cvr.innerHTML=VIEWS[v];
+    document.querySelectorAll(".tg").forEach(b=>b.classList.toggle("active", b.dataset.v===v));
+  }
+  document.querySelectorAll(".tg").forEach(b=>b.addEventListener("click",()=>showCVR(b.dataset.v)));
+  showCVR("runner");
 })();
 </script>
 </body>
