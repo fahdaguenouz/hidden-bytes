@@ -13,6 +13,7 @@ MAGIC = b"HBX1"
 # Header length is stored as an unsigned big-endian 32-bit integer.
 HEADER_SIZE = struct.Struct(">I")
 
+#convert to byte 
 MIB = 1024 * 1024
 
 # Protect the parser from allocating/reading unreasonable metadata.

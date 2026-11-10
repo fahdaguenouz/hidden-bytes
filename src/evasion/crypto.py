@@ -46,13 +46,13 @@ def build_payload(source: Path, delay: float) -> tuple[bytes, dict, bytes]:
     plaintext = source.read_bytes()
     original_size = len(plaintext)
 
-    # Fresh 256-bit key for every encryption.
+    # new 256-bit key for every encryption.
     key = AESGCM.generate_key(bit_length=256)
 
-    # Fresh 96-bit nonce for every encryption.
+    # new 96-bit nonce for every encryption.
     nonce = os.urandom(NONCE_SIZE)
 
-    # Authenticate the format identifier as AAD: altering MAGIC breaks auth.
+    #  the format identifier: altering MAGIC breaks auth.
     ciphertext = AESGCM(key).encrypt(nonce, plaintext, MAGIC)
 
     header = {
@@ -115,8 +115,6 @@ def encrypt_file(
 
     body, header, key = build_payload(source, delay)
 
-    # header["original_size"] is len(plaintext) computed by build_payload;
-    # reuse it instead of calling source.stat() again.
     requested_size = header["original_size"] + round(add_size_mb * MIB)
     padding = padding_for(requested_size, len(body))
 
