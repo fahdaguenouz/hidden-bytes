@@ -308,6 +308,34 @@ def test_build_payload_rejects_a_negative_delay(tmp_path: Path) -> None:
         build_payload(source, delay=-1)
 
 
+def test_add_size_is_capped() -> None:
+    import argparse
+
+    from src.common import MAX_ADD_SIZE_MB, add_size_number
+
+    # At the ceiling is accepted; above it is rejected with a clear message.
+    assert add_size_number(str(MAX_ADD_SIZE_MB)) == float(MAX_ADD_SIZE_MB)
+    with pytest.raises(argparse.ArgumentTypeError, match="add-size cannot exceed"):
+        add_size_number(str(MAX_ADD_SIZE_MB + 1))
+
+
+def test_encrypt_rejects_a_non_file_source(tmp_path: Path) -> None:
+    from src.evasion.cli import main
+
+    missing = tmp_path / "nope.bin"
+    out = tmp_path / "out.pyz"
+    # A missing source returns a non-zero exit with a clear error, not a crash.
+    rc = main(["--encrypt", str(missing), "--output", str(out)])
+    assert rc == 1
+    assert not out.exists()
+
+    # A directory as source is rejected the same way (not "permission denied").
+    a_dir = tmp_path / "subdir"
+    a_dir.mkdir()
+    rc = main(["--encrypt", str(a_dir), "--output", str(out)])
+    assert rc == 1
+
+
 def test_cli_encrypt_then_run_round_trip(tmp_path: Path) -> None:
     source = tmp_path / "simple_program.py"
     _write_payload(source)
