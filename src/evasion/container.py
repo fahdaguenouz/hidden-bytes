@@ -8,10 +8,10 @@ The JSON header carries the metadata required to recover the payload; the
 ciphertext is AES-256-GCM output; the trailing padding is random filler used
 for file-size manipulation and is ignored on read.
 
-Each container is protected by a randomly generated 256-bit AES key. The key
-is never stored inside the container itself: a self-extracting runner embeds it
-in its launcher, while a standalone ``.hbx`` container keeps it in a sidecar
-``.key`` file. Either way the key is required to recover the payload.
+Each container is protected by a randomly generated 256-bit AES key. The key is
+never stored inside the container itself: the self-extracting runner that
+carries the container embeds the key in its launcher, so the runner can recover
+its own payload with no separate key file.
 """
 
 from __future__ import annotations
@@ -166,18 +166,6 @@ def parse_container(data: bytes) -> tuple[dict, bytes]:
     handle = io.BytesIO(data)
     header = _read_header_from_handle(handle)
     ciphertext = _read_exact(handle, header["ciphertext_length"])
-
-    return header, ciphertext
-
-
-def read_container(source: Path) -> tuple[dict, bytes]:
-    """Read an HBX1 container and return ``(header, ciphertext)``."""
-    if not source.is_file():
-        raise ValueError(f"input file does not exist: {source}")
-
-    with source.open("rb") as handle:
-        header = _read_header_from_handle(handle)
-        ciphertext = _read_exact(handle, header["ciphertext_length"])
 
     return header, ciphertext
 

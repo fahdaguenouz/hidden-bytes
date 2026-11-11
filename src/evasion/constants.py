@@ -1,4 +1,8 @@
+"""Shared constants for the HBX1 container and runner formats.
 
+``KEY_SIZE`` and ``NONCE_SIZE`` are re-exported from ``common`` so the rest of
+the package can import every size from one place.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ MAGIC = b"HBX1"
 # Header length is stored as an unsigned big-endian 32-bit integer.
 HEADER_SIZE = struct.Struct(">I")
 
-#convert to byte 
+# One mebibyte, in bytes.
 MIB = 1024 * 1024
 
 # Protect the parser from allocating/reading unreasonable metadata.
@@ -29,4 +33,15 @@ RUNNER_MAGIC = b"HBX-RUNNER-V1"
 # executable (PyInstaller one-file mode).
 RUNNER_CONTAINER_NAME = "payload.hbx"
 
+__all__ = [
+    "KEY_SIZE",
+    "NONCE_SIZE",
+    "MAGIC",
+    "HEADER_SIZE",
+    "MIB",
+    "MAX_HEADER_SIZE",
+    "GCM_TAG_SIZE",
+    "RUNNER_MAGIC",
+    "RUNNER_CONTAINER_NAME",
+]
 
