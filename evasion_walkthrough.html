@@ -152,6 +152,17 @@
   .fact .q{font-family:var(--mono);font-size:11px;color:var(--soft);text-transform:uppercase;letter-spacing:.06em;}
   .fact .a{font-size:13.5px;margin-top:3px;}
   .fact .a.yes{color:var(--green);} .fact .a.no{color:var(--red);}
+  /* inside-a-runner tree */
+  .tree{font-family:var(--mono);font-size:13px;line-height:1.9;white-space:pre;overflow-x:auto;color:var(--soft);}
+  .tree .t-file{color:var(--cyan);font-weight:700;}
+  .tree .t-mem{color:var(--ink);}
+  .tree .t-hbx{color:var(--blue);font-weight:700;}
+  .tree .t-pad{color:#8695a8;}
+  .tree .t-size{color:var(--amber);font-variant-numeric:tabular-nums;}
+  .tree .t-note{color:var(--dim);}
+  .treekey{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--soft);margin-top:12px;
+    padding-top:12px;border-top:1px solid var(--line);}
+  .treekey i{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:6px;vertical-align:middle;}
   @media(max-width:640px){.lab,.feat,.cvr{grid-template-columns:1fr;}}
 </style>
 </head>
@@ -230,6 +241,23 @@
       <button class="tg" data-v="container">📦 Plain container <span>.hbx</span></button>
     </div>
     <div class="cvr" id="cvr"></div>
+  </div>
+
+  <p class="sub" style="margin-top:22px">And here is a <b>real</b> runner, unzipped — so you can see exactly
+     where the container (<code>payload.hbx</code>) hides. <b>With the CLI there is no separate <code>.hbx</code> file:</b>
+     it lives inside the runner.</p>
+  <div class="panel">
+    <div class="tree">
+<span class="t-file">demo.pyz</span>  <span class="t-note">← THE RUNNER (the one file the CLI made — 20,984 b on disk)</span>
+│   <span class="t-note">it is a zip, so inside it are three members:</span>
+├── <span class="t-mem">__main__.py</span>  <span class="t-size">11,312 b</span>  <span class="t-note">← launcher: run-time code + embedded key + AES</span>
+├── <span class="t-hbx">payload.hbx</span>  <span class="t-size">   178 b</span>  <span class="t-note">← THE CONTAINER: the HBX1 encrypted blob</span>
+└── <span class="t-pad">padding.bin</span>  <span class="t-size">16,561 b</span>  <span class="t-note">← random filler for the exact size</span>
+    </div>
+    <div class="treekey">
+      <span><i style="background:var(--cyan)"></i><b>runner</b> = the box you ship (<code>demo.pyz</code>)</span>
+      <span><i style="background:var(--blue)"></i><b>container</b> = the locked parcel inside (<code>payload.hbx</code>, starts with <code>HBX1</code>)</span>
+    </div>
   </div>
 
   <!-- 4. run simulator -->
