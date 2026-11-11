@@ -216,8 +216,39 @@
     </div>
   </div>
 
-  <!-- 2. clickable byte map -->
-  <h2><span class="idx">02</span> Anatomy of the HBX1 body</h2>
+  <!-- 2. how AES works -->
+  <h2><span class="idx">02</span> How AES-256-GCM locks the file</h2>
+  <p class="sub">The encryption at the heart of the tool. One primitive does both jobs:
+     it hides the bytes <b>and</b> proves nobody touched them.</p>
+  <div class="panel">
+    <div class="explain" style="min-height:auto">
+      <b>AES</b> is a <b>symmetric</b> cipher — the same secret key both locks and unlocks the data.
+      It works on fixed 128-bit blocks, and the <b>256</b> is the key length in bits (a 32-byte key).
+      A 256-bit key has 2<sup>256</sup> possibilities, far beyond brute force.
+      <b>GCM</b> (Galois/Counter Mode) is the <i>mode</i> that turns that block cipher into
+      <b>authenticated</b> encryption: alongside the ciphertext it computes a 16-byte
+      <b>authentication tag</b> that acts like a tamper-evident seal.
+    </div>
+    <div class="feat" style="margin-top:14px">
+      <div class="fcard"><div class="ico">🔑</div><h3>Key — 256 bits</h3>
+        <p>A fresh 32-byte random key per file, from the OS CSPRNG. Never a password. It is embedded in the runner so it can unlock itself.</p>
+        <span class="mapto">AESGCM.generate_key(256)</span></div>
+      <div class="fcard"><div class="ico">🎲</div><h3>Nonce — 96 bits</h3>
+        <p>A one-time random number used once per encryption. Reusing a nonce with the same key would break GCM — so a new one is drawn every time.</p>
+        <span class="mapto">os.urandom(12)</span></div>
+      <div class="fcard"><div class="ico">🏷️</div><h3>Tag — 128 bits</h3>
+        <p>Computed over the ciphertext. On decryption it is re-checked: a wrong key or a single flipped byte makes it mismatch and decryption is refused.</p>
+        <span class="mapto">InvalidTag → error</span></div>
+      <div class="fcard"><div class="ico">🧷</div><h3>AAD — the magic</h3>
+        <p>The <code>HBX1</code> magic is fed in as <b>associated data</b>: authenticated but not encrypted. Edit the magic and the tag check fails.</p>
+        <span class="mapto">encrypt(nonce, data, b"HBX1")</span></div>
+    </div>
+    <div class="tldr"><b>In one line:</b> ciphertext = <code>AES-256-GCM(key, nonce, file, aad=HBX1)</code>,
+      and recovery needs the key, the nonce and an intact tag — otherwise it fails loudly instead of returning wrong data.</div>
+  </div>
+
+  <!-- 3. clickable byte map -->
+  <h2><span class="idx">03</span> Anatomy of the HBX1 body</h2>
   <p class="sub">Click any segment to see what it is. The key is <b>not</b> in here — it rides inside
      the opener program instead.</p>
   <div class="panel">
@@ -231,14 +262,14 @@
     <div class="explain" id="explain"></div>
   </div>
 
-  <!-- 3. container vs runner -->
-  <h2><span class="idx">03</span> Container vs runner — where it lives</h2>
-  <p class="sub">Same encrypted body inside both. The difference is whether a self-opening wrapper is
-     around it — and where the key hides. Flip between them:</p>
+  <!-- 4. container vs runner -->
+  <h2><span class="idx">04</span> Container vs runner — where it lives</h2>
+  <p class="sub">The runner is the shippable artifact; the container is the encrypted body that lives
+     inside it. The key is always embedded in the runner's launcher. Flip between the two layers:</p>
   <div class="panel">
     <div class="toggle">
       <button class="tg" data-v="runner">🎁 Self-extracting runner <span>.pyz / .exe</span></button>
-      <button class="tg" data-v="container">📦 Plain container <span>.hbx</span></button>
+      <button class="tg" data-v="container">📦 The container <span>HBX1 body inside</span></button>
     </div>
     <div class="cvr" id="cvr"></div>
   </div>
@@ -260,8 +291,8 @@
     </div>
   </div>
 
-  <!-- 4. run simulator -->
-  <h2><span class="idx">04</span> Run it (simulated)</h2>
+  <!-- 5. run simulator -->
+  <h2><span class="idx">05</span> Run it (simulated)</h2>
   <p class="sub">Running the artifact triggers the timer, then it decrypts itself and launches the file.
      This is a sped-up simulation of the real output — the delay uses your slider value.</p>
   <div class="panel">
@@ -276,8 +307,8 @@
     </div>
   </div>
 
-  <!-- 4. four features -->
-  <h2><span class="idx">05</span> The four stealth moves</h2>
+  <!-- 6. four features -->
+  <h2><span class="idx">06</span> The four stealth moves</h2>
   <p class="sub">Each maps to a concrete part of the code.</p>
   <div class="feat">
     <div class="fcard"><div class="ico">🔒</div><h3>Encrypt</h3>
@@ -429,18 +460,18 @@
     container:`
       <div>
         <div class="filebox">
-          <div class="fhead"><span>DATA file · sample.hbx</span><span>inert ✋</span></div>
+          <div class="fhead"><span>the HBX1 body · payload.hbx (inside the runner)</span><span>inert ✋</span></div>
           <div class="layer body"><b>🔒 HBX1 body</b><small>magic · header · ciphertext + tag</small></div>
           <div class="layer pad"><b>🧱 padding</b><small>random filler to the exact size</small></div>
         </div>
-        <div class="sep-key">🔑 sample.hbx.key
-          <small style="display:block;margin-top:3px;color:var(--soft);font-family:var(--sans)">a SEPARATE file — without it, the container can't be opened</small></div>
+        <div class="sep-key">🔑 no key stored here
+          <small style="display:block;margin-top:3px;color:var(--soft);font-family:var(--sans)">the body carries no key — it is embedded in the runner's launcher</small></div>
       </div>
       <div class="facts2">
-        <div class="fact"><div class="q">where is the key?</div><div class="a">a separate .key file</div></div>
-        <div class="fact"><div class="q">can it run itself?</div><div class="a no">no — data only, does nothing alone</div></div>
-        <div class="fact"><div class="q">who makes it?</div><div class="a">library/API only (not the CLI)</div></div>
-        <div class="fact"><div class="q">read with</div><div class="a">read_container()</div></div>
+        <div class="fact"><div class="q">where is the key?</div><div class="a">in the runner's launcher, not in the body</div></div>
+        <div class="fact"><div class="q">can it run itself?</div><div class="a no">no — just data, wrapped by a runner</div></div>
+        <div class="fact"><div class="q">who makes it?</div><div class="a">build_payload(), always embedded in a runner</div></div>
+        <div class="fact"><div class="q">read with</div><div class="a">parse_container()</div></div>
       </div>`
   };
   function showCVR(v){
