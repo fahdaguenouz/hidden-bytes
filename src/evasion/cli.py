@@ -13,8 +13,6 @@ from .crypto import decrypt_file
 from .runner import (
     build_executable_from_source,
     build_runner_file,
-    is_runner,
-    read_runner_container,
 )
 
 
@@ -146,16 +144,9 @@ def _run_decrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
 
 def _run_inspect(args: argparse.Namespace) -> int:
-    if is_runner(args.source):
-        header, ciphertext = read_runner_container(args.source)
-        result = dict(header)
-        result["artifact_type"] = "runner"
-        result["container_ciphertext_bytes"] = len(ciphertext)
-        result["artifact_size_bytes"] = args.source.stat().st_size
-    else:
-        result = inspect_file(args.source)
-        result["artifact_type"] = "container"
-
+    # inspect_file already classifies runner vs container and reads only the
+    # header (never the ciphertext), so there is nothing to re-implement here.
+    result = inspect_file(args.source)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
