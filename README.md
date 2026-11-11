@@ -832,6 +832,25 @@ The container shown above is embedded in a single self-extracting file:
 
 The launcher and the container are kept in a zip container, with the payload stored **uncompressed** so the final file size is exactly predictable.
 
+#### Where is each part? (and where is the `.hbx`?)
+
+A common point of confusion: when you use the CLI, there is **no separate `.hbx` file on disk**. The runner *is* the only file you get, and the HBX1 container lives **inside** it as a zip member named `payload.hbx`. You only see it as a loose file after you `unzip` the runner (Step 6 above).
+
+```text
+demo.pyz   ← THE RUNNER   (the one file the CLI made — e.g. 20,984 bytes on disk)
+│
+│  it is a zip, so inside it are three members:
+├── __main__.py   (11,312 b)  ← the launcher: run-time code + embedded key + AES
+├── payload.hbx   (   178 b)  ← THE CONTAINER: the HBX1 encrypted blob
+└── padding.bin   (16,561 b)  ← random filler for the exact size
+```
+
+- **The runner** = `demo.pyz` — a real file in your folder. This is what you run.
+- **The container** = `payload.hbx` — embedded *inside* the runner, not a loose file until you extract it. Its first bytes literally spell `HBX1` followed by the JSON header (`{"algorithm":"AES-256-GC...`). That `HBX1` magic is the container's signature.
+- **A standalone `.hbx` + `.key` pair** is only produced by the internal `encrypt_file` API, which the CLI never calls — so normal `--encrypt` never leaves a bare `.hbx` behind.
+
+Mental model: **the runner is the box you ship; the container (`payload.hbx`) is the locked parcel inside it.** `--inspect` and `--decrypt` reach into the box, pull out `payload.hbx`, and read it for you.
+
 ### 4.6 Encryption flow diagram
 
 ```mermaid
