@@ -2,9 +2,11 @@
 
 This is RUN-TIME code: it executes on the target machine when the artifact
 is run, NOT at build time. runner.py imports this string, fills its
-{container_name}, {hbx_key} and {pure_aes_source} placeholders, and packages
-the result into the shippable artifact. It is kept in its own file so that
-runner.py reads as pure build-time logic.
+{container_name} and {hbx_key} placeholders, and packages the result into the
+shippable artifact. The launcher decrypts with the ``cryptography`` library,
+which must be importable at run time (bundled into the .exe by PyInstaller, or
+installed in the interpreter that runs the .pyz). It is kept in its own file so
+that runner.py reads as pure build-time logic.
 """
 
 RUNNER_TEMPLATE = '''"""Hidden-Bytes self-extracting runner.
@@ -26,11 +28,13 @@ import tempfile
 import time
 import zipfile
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
+
 MAGIC = b"HBX1"
 CONTAINER_NAME = "{container_name}"
 HBX_KEY = "{hbx_key}"
 
-{pure_aes_source}
 
 def _hbx_container_bytes():
     """Return the raw bytes of the embedded HBX1 container."""
@@ -86,8 +90,8 @@ def main():
     nonce = base64.b64decode(header["nonce"])
 
     try:
-        plaintext = decrypt_gcm(key, nonce, ciphertext, MAGIC)
-    except InvalidTagError:
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, MAGIC)
+    except InvalidTag:
         print(
             "[ERROR] decryption failed: wrong key or damaged container",
             file=sys.stderr,

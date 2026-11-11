@@ -6,9 +6,9 @@ payload and launches it. Two flavours are produced:
 
 ``script`` mode
     A zipapp archive: a Python launcher plus the encrypted container, stored
-    uncompressed so the file size is exactly predictable. The launcher only
-    needs a Python 3 interpreter, because the AES-GCM implementation is
-    spliced into it.
+    uncompressed so the file size is exactly predictable. The launcher decrypts
+    with the ``cryptography`` library, which must be installed in the
+    interpreter that runs the ``.pyz``.
 
 ``executable`` mode
     The launcher and the container are packaged into one native executable
@@ -39,7 +39,6 @@ from .container import parse_container
 from .runner_template import RUNNER_TEMPLATE
 from .encoding import b64_encode
 from ..embedding import build_executable as _package_executable
-from ..embedding import pure_aes_source
 
 # Marker block written at the very top of every generated launcher.
 _MARKER_TEMPLATE = (
@@ -66,12 +65,6 @@ SHEBANG = b"#!/usr/bin/env python3\n"
 
 
 
-def _pure_aes_source() -> str:
-    """Return the source of the dependency-free AES-GCM implementation."""
-
-    return pure_aes_source()
-
-
 def render_runner(
     container_name: str = RUNNER_CONTAINER_NAME, hbx_key: str = ""
 ) -> bytes:
@@ -82,7 +75,6 @@ def render_runner(
     """
 
     source = RUNNER_TEMPLATE
-    source = source.replace("{pure_aes_source}", _pure_aes_source(), 1)
     source = source.replace("{container_name}", container_name, 1)
     source = source.replace("{hbx_key}", hbx_key, 1)
 

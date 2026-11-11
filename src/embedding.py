@@ -1,9 +1,8 @@
-"""Shared helpers for building self-contained generated artifacts.
+"""Shared helpers for building the generated artifacts.
 
-The generated artifacts (the evasion runner and the polymorphic program) must
-run on a machine where nothing is installed. They therefore carry a copy of
-the dependency-free AES-GCM implementation, and they can optionally be
-packaged into a native executable with PyInstaller.
+The generated artifacts (the evasion runner and the polymorphic program)
+decrypt with the ``cryptography`` library at run time, and can be packaged into
+a single native executable with PyInstaller, which bundles that library.
 """
 
 from __future__ import annotations
@@ -14,25 +13,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
-
-def pure_aes_source() -> str:
-    """Return the source of the dependency-free AES-256-GCM implementation."""
-
-    try:
-        from importlib.resources import files
-
-        source = (
-            files("hidden_bytes.evasion")
-            .joinpath("pure_aes.py")
-            .read_text(encoding="utf-8")
-        )
-    except Exception:  # noqa: BLE001 - fall back to the package directory
-        source = (
-            Path(__file__).resolve().parent / "evasion" / "pure_aes.py"
-        ).read_text(encoding="utf-8")
-
-    return source
 
 
 def has_pyinstaller() -> bool:

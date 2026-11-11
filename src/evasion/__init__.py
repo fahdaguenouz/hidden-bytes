@@ -36,7 +36,6 @@ from .crypto import (
     load_key,
     padding_for,
 )
-from .pure_aes import InvalidTagError, decrypt_gcm
 from .runner import (
     build_executable,
     build_executable_from_source,
@@ -53,7 +52,6 @@ from .cli import build_parser, main
 __all__ = [
     "GCM_TAG_SIZE",
     "HEADER_SIZE",
-    "InvalidTagError",
     "KEY_SIZE",
     "MAGIC",
     "MAX_HEADER_SIZE",
@@ -67,7 +65,6 @@ __all__ = [
     "build_payload",
     "build_runner_file",
     "decrypt_file",
-    "decrypt_gcm",
     "decrypt_payload",
     "encrypt_file",
     "inspect_file",
