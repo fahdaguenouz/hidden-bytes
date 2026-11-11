@@ -43,7 +43,7 @@ Hidden-Bytes is a command-line educational project with two separate programs:
 - Exact final-size calculation for a requested padding increase.
 - A recovery delay that is **enforced by the produced artifact itself**, not only by the tool.
 - A self-extracting runner: one file that carries the encrypted payload, waits, decrypts, and launches the recovered program.
-- A dependency-free AES-GCM implementation so the runner needs nothing but a Python interpreter.
+- AES-256-GCM encryption via the `cryptography` library, bundled into the `.exe` by PyInstaller so the native artifact is self-contained.
 - Authentication failure when the wrong key or modified ciphertext is supplied.
 - **File-level polymorphism**: a program that rewrites its own source on every run, so its hash changes while its behaviour does not.
 - **A reverse shell payload** that connects back to an address the operator chooses, and the defensive telemetry that such a connection produces.
@@ -171,7 +171,6 @@ Hidden-Bytes/
 │   │   ├── encoding.py
 │   │   ├── container.py
 │   │   ├── crypto.py
-│   │   ├── pure_aes.py      # dependency-free AES-256-GCM, spliced into artifacts
 │   │   ├── runner.py        # self-extracting runner generation
 │   │   └── cli.py
 │   └── polymorphic.py       # self-modifying program generator
@@ -411,7 +410,7 @@ The delay is **stored in the artifact and enforced by the artifact**. The tool d
 Two details make this work in practice:
 
 - **The artifact is self-contained.** The random AES-256 key is embedded in the launcher alongside the ciphertext, so the runner recovers its own payload with no separate key file and no passphrase.
-- **The runner has no third-party dependency.** The AES-256-GCM implementation is spliced into the generated launcher, so the artifact needs nothing but a Python 3 interpreter — no `pip install` in the lab VM.
+- **The runner decrypts with the `cryptography` library.** For the `.pyz` form the library must be installed in the interpreter that runs it; for the `.exe` form PyInstaller bundles it, so the native artifact is self-contained.
 
 ### 4.2 CLI reference — all options
 
@@ -657,14 +656,14 @@ source that runs on the target. This is the clearest way to *see* the runner:
 mkdir peek
 cd peek
 unzip ../obfuscated.pyz        # → __main__.py  payload.hbx  (+ padding.bin)
-less __main__.py               # the filled-in launcher: HBX_KEY = "..." and the spliced-in AES
+less __main__.py               # the filled-in launcher: HBX_KEY = "..." and the cryptography import
 cd ..
 ```
 
-Inside `__main__.py` you will find the embedded `HBX_KEY`, the dependency-free
-AES-256-GCM implementation, and the `main()` that waits for the delay, decrypts,
-and launches the payload. `payload.hbx` is the encrypted container; `padding.bin`
-is the random filler that sets the exact size.
+Inside `__main__.py` you will find the embedded `HBX_KEY`, the `from cryptography...`
+import used to decrypt, and the `main()` that waits for the delay, decrypts, and
+launches the payload. `payload.hbx` is the encrypted container; `padding.bin` is
+the random filler that sets the exact size.
 
 > **Note:** `unzip` reports `warning: … extra bytes at beginning` — that is the
 > shebang line prepended to the archive, and is harmless.
@@ -719,7 +718,7 @@ Two practical notes for the `.exe` build:
 - **The bundled Python runtime adds fixed overhead** (roughly 9–15 MB depending on the platform and interpreter). The size target therefore has to exceed that overhead; `--add-size 101` does. If you request a size that is too small, the tool reports the minimum it needs instead of failing silently.
 - **The size is exact.** The padding is appended after the packaged archive. The PyInstaller loader locates its archive with a back-to-front scan for its cookie, so trailing bytes do not affect execution. The final file is exactly `original_size + requested_size` bytes.
 
-Use `--no-native` if you deliberately want the Python-archive form under a `.exe` name (for example to show the difference to the auditor), and `--build-exe` to force a native build for an output path that does not end in `.exe`.
+An output name ending in `.exe` is packaged into a native executable automatically; any other name produces the Python-archive runner.
 
 Check what you actually produced:
 
@@ -921,7 +920,7 @@ The generated program, when it runs:
 2. **Decrypts with the embedded random key** using AES-256-GCM and verifies the payload's SHA-256 digest.
 3. **Executes the payload**, forwarding its own command-line arguments to it.
 
-The payload is supplied by the operator as a file. The generated program has no third-party dependency: the AES-256-GCM implementation is spliced into it, so it runs on a machine with nothing but a Python 3 interpreter.
+The payload is supplied by the operator as a file. The generated program decrypts its payload with the `cryptography` library, which must be importable at run time (installed for the script, or bundled into the `.exe` by PyInstaller).
 
 ### 5.2 Generate a demonstration
 
@@ -950,9 +949,8 @@ print("Hello from the polymorphic payload")
 A fresh random 256-bit key is generated for every build and embedded in the
 generated program, so no passphrase is required at run time.
 
-The payload is limited to 64 KiB. It must be supplied as a **file**: inline
-text is rejected, because a payload that is executed should be a deliberate,
-reviewable file rather than a string on the command line.
+The payload must be supplied as a **file**: a payload that is executed should
+be a deliberate, reviewable file rather than a string on the command line.
 
 ### 5.3 Observe the changing hash
 
@@ -1085,26 +1083,18 @@ python3 -m src.polymorphic \
   --payload lab/reverse_shell_payload.py
 ```
 
-The packaged executable contains the encrypted payload and the spliced AES implementation, and behaves identically to the script.
+The packaged executable contains the encrypted payload, decrypts it with the `cryptography` library (bundled by PyInstaller), and behaves identically to the script.
 
-**How the self-modification works in a packaged executable.** A script can rewrite its own source in place, but a running executable cannot: the file is locked on Windows and busy on Linux. The packaged executable therefore carries a small mutable region appended after its archive, and on each run it writes the next generation as a sibling file and starts that:
+**Self-modification is demonstrated with the script form.** A script can rewrite its own source in place on every run, so its SHA-256 changes while its behaviour stays identical — the clearest demonstration of the polymorphic property:
 
-```text
-> polymorphic.exe
-[INFO] Polymorphic signature updated successfully.
-
-> dir /b polymorphic*
-polymorphic.exe
-polymorphic.gen1.exe
+```bash
+python3 -m src.polymorphic --generate poly.py --payload lab/reverse_shell_payload.py
+sha256sum poly.py          # run it, then hash again — the digest changes each run
+python3 poly.py
+sha256sum poly.py          # different hash, same behaviour
 ```
 
-Each generation has a different SHA-256 and identical behaviour. The chain stops after three generations, so it terminates.
-
-To compare the hashes:
-
-```powershell
-Get-FileHash polymorphic.exe, polymorphic.gen1.exe -Algorithm SHA256
-```
+A running packaged `.exe` cannot rewrite itself in place (the file is locked on Windows and busy on Linux), so the `.exe` is the native packaging of the same program: it runs the reverse-shell payload, while the in-place self-modification is shown with the `.py` form above.
 
 ### 5.8 Polymorphic flow
 
@@ -1116,18 +1106,15 @@ flowchart TD
     C -- "No" --> D["Raise error"]
     C -- "Yes" --> E["Generate a random AES-256 key"]
     E --> F["Encrypt payload with AES-256-GCM"]
-    F --> G["Compute payload SHA-256"]
-    G --> H["Render launcher with ciphertext, key, nonce, digest, token"]
+    F --> H["Render program with ciphertext, key, nonce, token"]
     H --> I["Compile to validate syntax"]
     I --> J["Write generated program"]
 
     J --> K["Operator runs the generated program"]
     K --> L["Rewrite own signature token"]
     L --> M["File hash changes, behaviour does not"]
-    M --> N["Decrypt payload with AES-256-GCM"]
-    N --> O{"Digest matches?"}
-    O -- "No" --> P["Exit with integrity error"]
-    O -- "Yes" --> Q["Execute payload with the operator's arguments"]
+    M --> N["Decrypt payload with AES-256-GCM (tag authenticates)"]
+    N --> Q["Execute payload with the operator's arguments"]
     Q --> R["Payload connects to the designated IP and port"]
 ```
 
@@ -1135,7 +1122,7 @@ flowchart TD
 
 The demonstration shows **file-level variation**: the bytes of the program change on every run while the behaviour stays identical. That is the property a defender looks for when comparing samples of the same malware family — many different hashes, one behaviour.
 
-In script form the self-modification is a text substitution in a Python source file. In packaged form it is a rewrite of the mutable region appended to the executable, which produces the next generation as a sibling file. Neither is machine-code mutation, and both are the honest, inspectable version of the technique.
+The self-modification is a text substitution in the generated Python source file: each run replaces its mutation token with a fresh value and re-saves, so the file hash changes while the behaviour does not. It is not machine-code mutation; it is the honest, inspectable version of the technique. The packaged `.exe` is the native form of the same program — it runs the payload, while the in-place self-modification is demonstrated with the script.
 
 The payload is executed as an ordinary child process with no injection, no hollowing and no concealment, and the delay, the connection and the child process are all plainly visible to behavioural monitoring.
 
@@ -1165,7 +1152,7 @@ Use harmless text samples first. These commands are intended to make the behavio
 5. Inspect the runner and show the `delay_seconds` metadata.
 6. Show that the payload's plaintext does not appear in the artifact (`grep`).
 7. Recover the payload with `--decrypt --no-delay` and compare it to the original.
-8. On the Windows VM, repeat with `--build-exe` to produce `evaded_program.exe` and confirm the same behaviour and the same exact size accounting.
+8. On the Windows VM, build with a `.exe` output name to produce `evaded_program.exe` and confirm the same behaviour and the same exact size accounting.
 
 ### Exercise B — Polymorphism and stable output
 
@@ -1217,11 +1204,9 @@ The container stores the nonce and metadata, but not the AES key. The CLI embeds
 
 Each encryption generates a fresh 256-bit random AES key using `os.urandom`. The key is never derived from a passphrase or any user-supplied input. It is embedded in the runner artifact and is required to recover the payload.
 
-### Dependency-free AES in the runner
+### AES in the runner
 
-A generated runner has to work on a machine where nothing is installed. The tool therefore ships a small pure-Python implementation of the parts of AES-256-GCM it needs (the forward cipher for the counter-mode keystream, and GHASH for the tag). It is spliced into the generated launcher at build time, so the artifact needs only a Python 3 interpreter.
-
-The implementation is verified against the `cryptography` package in the test suite, byte for byte, including the FIPS-197 AES-256 test vector. That comparison is what makes the pure-Python version trustworthy.
+The generated artifacts decrypt with the `cryptography` library (the same library used to encrypt at build time), so the AES-256-GCM implementation is a single, maintained, hardware-accelerated one on both sides. The `.pyz` form needs `cryptography` installed in the interpreter that runs it; the `.exe` form has it bundled by PyInstaller, so the native artifact is self-contained.
 
 ### SHA-256
 
@@ -1235,7 +1220,7 @@ The artifact is deliberately padded to a target size. Padding illustrates how fi
 
 A Windows Portable Executable normally has a DOS header, PE/COFF headers, section headers, and sections. HBX1 has a different custom layout. If an input file happens to be a PE, this tool encrypts its bytes as opaque data; it does not preserve a directly executable PE image in the container.
 
-The `--build-exe` option is a separate packaging step: the launcher and the encrypted container are bundled into a native executable by PyInstaller, an ordinary application packager. The recovered payload is still only ever launched as a normal child process.
+Producing a `.exe` is a separate packaging step: the launcher and the encrypted container are bundled into a native executable by PyInstaller, an ordinary application packager. The recovered payload is still only ever launched as a normal child process.
 
 ### Reverse-shell threat model
 
@@ -1291,8 +1276,8 @@ flowchart LR
 |---|---|---|
 | HBX1 encryption | Output representation, size, metadata, ciphertext and padding | Correct recovery reproduces the original bytes |
 | Runner execution | Wall-clock time before the payload starts | The payload's own behaviour and output are unchanged |
-| Polymorphic generation | Fresh key, nonce and signature token, whole-file hash | The payload behaviour and the digest verification logic |
-| Polymorphic execution | The signature token in the source, and therefore the file hash | The payload behaviour and the digest verification logic |
+| Polymorphic generation | Fresh key, nonce and signature token, whole-file hash | The payload behaviour and the decryption logic |
+| Polymorphic execution | The signature token in the source, and therefore the file hash | The payload behaviour and the decryption logic |
 
 ---
 
@@ -1381,13 +1366,13 @@ Recommended controls include application control/allowlisting, least privilege, 
 1. **Detection results are measured, not engineered:** the tool encrypts, pads and packages the artifact, but it implements no dedicated anti-AV trick. The Defender and VirusTotal outcome depends on what a scanner sees in the artifact and must be measured in the VM — report the number you observe.
 2. **The runner launches the payload, it does not disguise it:** the recovered program is started as a child process of the runner. There is no process hollowing or injection, and the delay is announced on stdout.
 3. **The reverse shell is a lab payload:** it reaches exactly one address, chosen on the command line, with no persistence, privilege escalation, lateral movement or target discovery. It is a teaching artifact.
-4. **Not a native PE polymorpher:** the self-modification is a text substitution in a Python source file, and the `--build-exe` output is a PyInstaller bundle. Neither is machine-code mutation.
+4. **Not a native PE polymorpher:** the self-modification is a text substitution in a Python source file, and the `.exe` output is a PyInstaller bundle. Neither is machine-code mutation.
 5. **The self-modification needs a writable file:** if the generated program is read-only, the signature update fails and the hash stops changing. The program still runs.
 6. **Key protection is the user's responsibility:** the random AES-256 key is embedded in the runner artifact. Protect the runner with access controls; anyone who can read it can recover the payload.
-7. **The `--build-exe` output has a fixed runtime overhead:** the bundled Python interpreter adds roughly 9–15 MB, so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
+7. **The `.exe` output has a fixed runtime overhead:** the bundled Python interpreter and the `cryptography` library add roughly 14–20 MB, so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
 8. **Manual isolation verification:** source code and README instructions cannot prove the VM is isolated.
 9. **Audit results must be measured:** do not claim a detection percentage or a pass without recorded, reproducible evidence.
-10. **The `--build-exe` option needs PyInstaller:** it requires `python -m pip install pyinstaller` inside the isolated VM. The pure-Python modes have no such requirement.
+10. **Building a `.exe` needs PyInstaller:** it requires `python -m pip install pyinstaller` inside the isolated VM. The `.pyz` form needs only a Python interpreter with `cryptography` installed.
 
 ---
 
@@ -1405,7 +1390,7 @@ Do not disable endpoint protection outside the lab, deploy these payloads on sys
 - How is the final artifact size calculated, and is the increase exact?
 - At what stage is the delay enforced, and who enforces it — the tool or the artifact?
 - How does the runner protect its key if the key is not stored in the artifact?
-- Why does the runner need a dependency-free AES implementation?
+- Why does the runner decrypt with the `cryptography` library, and how does the `.exe` carry it?
 - What changes in a polymorphic run, and what remains stable?
 - Why can a whole-file hash change without a meaningful change in behavior?
 - How does a reverse shell work, and what does it look like to a defender?

@@ -5,3 +5,4 @@ __pycache__/
 *.hbx
 *.hbx.key
 
+peek/

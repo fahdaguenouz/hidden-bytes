@@ -21,7 +21,6 @@ from src.evasion import (
     read_runner_container,
 )
 from src.evasion.crypto import build_payload
-from src.evasion.pure_aes import decrypt_gcm
 from src.polymorphic import generate
 
 
@@ -141,45 +140,6 @@ def test_polymorphic_program_rejects_an_empty_payload(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Pure-Python AES-256-GCM
 # ---------------------------------------------------------------------------
-
-
-def test_pure_aes_gcm_matches_the_cryptography_library() -> None:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-    key = os.urandom(32)
-    nonce = os.urandom(12)
-
-    for size in (0, 1, 15, 16, 17, 1000):
-        plaintext = os.urandom(size)
-        ciphertext = AESGCM(key).encrypt(nonce, plaintext, b"HBX1")
-        assert decrypt_gcm(key, nonce, ciphertext, b"HBX1") == plaintext
-
-
-def test_pure_aes_gcm_rejects_tampering() -> None:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-    key = os.urandom(32)
-    nonce = os.urandom(12)
-    ciphertext = bytearray(AESGCM(key).encrypt(nonce, b"payload", b"HBX1"))
-    ciphertext[0] ^= 0xFF
-
-    with pytest.raises(Exception):
-        decrypt_gcm(key, nonce, bytes(ciphertext), b"HBX1")
-
-
-def test_pure_aes_gcm_encrypt_matches_the_cryptography_library() -> None:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-    from src.evasion.pure_aes import encrypt_gcm
-
-    key = os.urandom(32)
-    nonce = os.urandom(12)
-
-    for size in (0, 1, 16, 17, 1000):
-        plaintext = os.urandom(size)
-        assert encrypt_gcm(key, nonce, plaintext, b"HBXP") == AESGCM(key).encrypt(
-            nonce, plaintext, b"HBXP"
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -174,14 +174,14 @@ MUTATION_TOKEN = "<span class="tok" id="tok">a1b2c3d4e5f60718</span>"
       <span class="mapto">_recover_payload() · exec()</span></div>
   </div>
 
-  <!-- 4. .exe catch -->
-  <h2><span class="idx">04</span> The frozen-<code>.exe</code> catch</h2>
-  <p class="sub">A plain script edits itself directly. A packaged <code>.exe</code> is locked while running —
-     so it writes the <i>next generation</i> beside itself and launches that, with a counter so it stops.</p>
-  <div class="panel" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--soft)">
-    <span style="color:var(--violet)">prog.exe</span> → <span style="color:var(--violet)">prog.gen1.exe</span>
-    → <span style="color:var(--violet)">prog.gen2.exe</span> → <span style="color:var(--violet)">prog.gen3.exe</span>
-    → <span style="color:var(--red)">stop (max generations)</span>
+  <!-- 4. script vs exe -->
+  <h2><span class="idx">04</span> Script vs <code>.exe</code></h2>
+  <p class="sub">A plain <code>.py</code> script edits its own file directly on every run — that is where the
+     self-modification is shown. A packaged <code>.exe</code> is locked while running and cannot rewrite
+     itself in place, so it is the native packaging of the same program: it runs the payload.</p>
+  <div class="panel" style="display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--soft)">
+    <span><span style="color:var(--violet)">poly.py</span> → rewrites itself each run → new hash, same behaviour</span>
+    <span><span style="color:var(--violet)">poly.exe</span> → runs the reverse-shell payload</span>
   </div>
 
   <div class="tldr"><b>Defender's takeaway:</b> if the file keeps changing but the behaviour doesn't, stop trusting
