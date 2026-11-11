@@ -1,7 +1,7 @@
 # Hidden-Bytes
 
 Hidden-Bytes is a command-line toolkit of two programs built for the HiddenBytes assignment:
-
+  
 - **`evasion`** — encrypts a target binary into an authenticated HBX1 container, pads it to a requested size, and packages it into a self-extracting runner that waits for a configured delay and then decrypts and launches the recovered program.
 - **`polymorphic`** — generates a self-modifying program that carries an encrypted payload (such as the reverse-shell payload in `lab/`), rewrites its own bytes on every run so its hash changes while its behaviour does not, and executes the payload.
 
