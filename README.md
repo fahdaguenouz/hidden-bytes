@@ -355,6 +355,14 @@ python3 lab/vt_check.py evaded_program.exe
 
 `vt_check.py` prints the bypass rate the audit asks for and exits non-zero when the 60% threshold is not met. **Only upload artifacts you created yourself.** A VirusTotal sample is published to a public multi-scanner service and may be shared onward.
 
+#### Measured result (this project)
+
+The evasion artifact (`res.exe`, a native `.exe` runner wrapping a harmless test payload) was uploaded to VirusTotal. **Only 2 of 62 engines flagged it**, i.e. a **~97% bypass rate** — well above the subject's 60% threshold.
+
+![VirusTotal detection result: 2 of 62 vendors flagged the evasion artifact](virus-total.png)
+
+Reading the result honestly: the two detections are **generic heuristic flags on the PyInstaller/packed-executable stub, not signature matches on the payload** (the payload only prints a banner). This is itself a useful teaching point — it is the *packing technique*, not the payload, that the two engines react to, which is exactly the behaviour-based detection the [defensive analysis](#10-defensive-analysis) recommends. Because the wrapped payload is benign, a low score also partly reflects that there was little malicious content to match in the first place; a stronger before/after demonstration encrypts a sample a scanner is known to flag (such as the EICAR test file) and shows the detection ratio drop after packaging.
+
 #### What to report if the measurement fails
 
 Report the number you observed. A measured 45% bypass is a legitimate result and a good talking point; an unmeasured claim of 60% is not.
@@ -1302,7 +1310,7 @@ Use this checklist during the audit. Mark an item only after collecting evidence
 - [ ] **VM isolation:** run `lab/vm_preflight.ps1` in the VM and save the output as evidence.
 - [ ] **Detection surface:** run `lab/detect_surface.py` on the artifact and save the report.
 - [ ] **Defender:** run `lab/defender_scan.ps1` and record the verdict exactly as observed.
-- [ ] **VirusTotal:** run `lab/vt_check.py` on your own artifact and record the measured ratio.
+- [ ] **VirusTotal:** run `lab/vt_check.py` on your own artifact and record the measured ratio. *(Captured for this project: 2/62 detections — see [the measured result in §3.5](#measured-result-this-project) and `virus-total.png`.)*
 - [ ] **Limitations:** report the measured detection result, not a claim. Identify what the result depends on.
 - [ ] **Evidence handling:** store logs/screenshots and test hashes without exposing key contents.
 
