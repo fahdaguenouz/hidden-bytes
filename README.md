@@ -430,7 +430,7 @@ The module expects exactly one operation (`--encrypt`, `--decrypt`, or `--inspec
 | `--decrypt` | Recover the original file from a runner, without executing it | Must be used with `--output` |
 | `--inspect` | Print runner/container metadata | Does not decrypt the payload |
 | `--output PATH` | Destination path | Required for `--encrypt` and `--decrypt`. An `.exe` name produces a native executable; any other name produces a `.pyz` runner |
-| `--add-size MB` | Requested increase in final artifact size | Help default: `0.01` MB; `1` requests 1 MiB (1,048,576 bytes); `101` requests 101 MiB |
+| `--add-size MB` | Requested increase in final artifact size | Help default: `0.01` MB; `1` requests 1 MiB (1,048,576 bytes); `101` requests 101 MiB. Capped at **2048 MB** — a larger value is rejected with a clear error rather than exhausting memory or disk |
 | `--delay SECONDS` | Delay the runner enforces before launching the payload | Help default: `101` seconds; set a small value such as `2` for a quick demo |
 | `--no-delay` | Skip the stored delay during `--decrypt` | Useful for controlled tests; it does not affect the delay a runner enforces when run |
 
