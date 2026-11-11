@@ -93,7 +93,7 @@ def render_runner(
 
     launcher = (marker + source).encode("utf-8")
 
-    # Guard against a malformed template: the launcher must be valid Python
+    #  the launcher must be valid Python
     # before it is embedded in an artifact.
     compile(launcher.decode("utf-8"), "<runner>", "exec")
 
@@ -364,7 +364,6 @@ def build_executable_from_source(
     output: Path,
     add_size_mb: float,
     delay: float,
-    workdir: Path | None = None,
 ) -> dict:
     """Build a self-extracting native executable from a payload file.
 
@@ -380,9 +379,7 @@ def build_executable_from_source(
 
     from .crypto import build_payload
 
-    owned_workdir = workdir is None
-    if workdir is None:
-        workdir = Path(tempfile.mkdtemp(prefix="hbx_build_"))
+    workdir = Path(tempfile.mkdtemp(prefix="hbx_build_"))
 
     try:
         name = output.stem or "runner"
@@ -438,5 +435,4 @@ def build_executable_from_source(
             "actual_size": output.stat().st_size,
         }
     finally:
-        if owned_workdir:
-            shutil.rmtree(workdir, ignore_errors=True)
+        shutil.rmtree(workdir, ignore_errors=True)

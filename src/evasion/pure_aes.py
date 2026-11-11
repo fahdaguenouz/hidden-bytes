@@ -21,7 +21,11 @@ class InvalidTagError(Exception):
 
 
 def _build_sbox():
-    """Generate the AES S-box and its inverse from the algebraic definition."""
+    """Generate the AES S-box from the algebraic definition.
+
+    Only the forward S-box is needed: AES-GCM uses the forward cipher for both
+    the counter-mode keystream and the tag mask, and never the inverse cipher.
+    """
 
     sbox = [0] * 256
     p = 1
@@ -46,14 +50,10 @@ def _build_sbox():
 
     sbox[0] = 0x63
 
-    inv_sbox = [0] * 256
-    for index, item in enumerate(sbox):
-        inv_sbox[item] = index
-
-    return sbox, inv_sbox
+    return sbox
 
 
-SBOX, INV_SBOX = _build_sbox()
+SBOX = _build_sbox()
 
 
 def _xtime(value):

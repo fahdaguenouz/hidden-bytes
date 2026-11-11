@@ -35,7 +35,7 @@ HBX_KEY = "{hbx_key}"
 def _hbx_container_bytes():
     """Return the raw bytes of the embedded HBX1 container."""
 
-    # In a frozen bundle the data files are unpacked next to the executable.
+    # In a frozen bundle the data files are unpacked next to the executable. exe
     bundle = getattr(sys, "_MEIPASS", None)
     if bundle is not None:
         candidate = os.path.join(bundle, CONTAINER_NAME)
