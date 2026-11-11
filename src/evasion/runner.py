@@ -117,11 +117,17 @@ def _build_archive(
             compress_type=zipfile.ZIP_STORED,
         )
         if padding:
-            archive.writestr(
-                zipfile.ZipInfo(PADDING_NAME),
-                os.urandom(padding),
-                compress_type=zipfile.ZIP_STORED,
-            )
+            # Stream the padding in chunks instead of allocating all of it at
+            # once with os.urandom(padding), which would need the full padding
+            # size in memory on top of the archive buffer.
+            zinfo = zipfile.ZipInfo(PADDING_NAME)
+            zinfo.compress_type = zipfile.ZIP_STORED
+            with archive.open(zinfo, "w") as handle:
+                remaining = padding
+                while remaining:
+                    chunk = min(remaining, MIB)
+                    handle.write(os.urandom(chunk))
+                    remaining -= chunk
 
     return SHEBANG + buffer.getvalue()
 

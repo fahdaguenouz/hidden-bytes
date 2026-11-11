@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..common import delay_number, positive_number
+from ..common import add_size_number, delay_number
 from .container import inspect_file
 from .crypto import decrypt_file
 from .runner import (
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--add-size",
-        type=positive_number,
+        type=add_size_number,
         default=0.01,
         metavar="MB",
         help="additional size to add during encryption (default: 0.01 MB)",
@@ -79,6 +79,9 @@ def _run_encrypt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
     if args.source.resolve() == args.output.resolve():
         parser.error("source and output cannot be the same file")
+
+    if not args.source.is_file():
+        raise ValueError(f"source is not a readable file: {args.source}")
 
     original_size = args.source.stat().st_size
 
