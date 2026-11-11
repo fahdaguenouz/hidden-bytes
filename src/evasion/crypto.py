@@ -1,12 +1,14 @@
 """AES-256-GCM encryption and recovery for HBX1 containers.
 
-A container is the encrypted form of a payload. It can be written on its own
-(``.hbx`` file) or embedded in a self-extracting runner that waits for the
-configured delay before recovering the payload.
+A container is the encrypted form of a payload. The CLI always embeds the
+container inside a self-extracting runner that waits for the configured delay
+before recovering the payload.
 
-Each container is protected by a freshly generated 256-bit random key. The key
-is written to a sidecar ``.key`` file and is required to recover the payload;
-it is never derived from a passphrase.
+Each container is protected by a freshly generated 256-bit random key, never
+derived from a passphrase. The key is **embedded inside the runner artifact
+itself** (see ``runner.py``): no separate key file is ever produced, and the
+runner recovers its own payload. The runner artifact is therefore the secret
+and must be protected with access controls.
 """
 
 from __future__ import annotations
@@ -21,13 +23,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .constants import (
     HEADER_SIZE,
-    KEY_SIZE,
     MAGIC,
     MAX_HEADER_SIZE,
-    MIB,
     NONCE_SIZE,
 )
-from .container import read_container
 from .encoding import b64_decode, b64_encode
 
 
@@ -36,8 +35,8 @@ def build_payload(source: Path, delay: float) -> tuple[bytes, dict, bytes]:
 
     Returns ``(body, header, key)`` where ``body`` is the container without
     the size padding, ``header`` is its metadata and ``key`` is the raw
-    256-bit random encryption key. The key must be written to a sidecar
-    ``.key`` file so the container can be recovered later.
+    256-bit random encryption key. The caller (``runner.py``) embeds that key
+    inside the runner artifact so it can recover its own payload later.
     """
 
     if delay < 0:
@@ -76,101 +75,6 @@ def build_payload(source: Path, delay: float) -> tuple[bytes, dict, bytes]:
     return body, header, key
 
 
-def padding_for(requested_size: int, current_size: int) -> int:
-    """Return the number of random bytes needed to reach the requested size."""
-
-    if requested_size < current_size:
-        raise ValueError(
-            "requested final size is too small for the encrypted container "
-            f"metadata and ciphertext. Minimum required: {current_size} bytes; "
-            f"requested: {requested_size} bytes."
-        )
-    return requested_size - current_size
-
-
-def encrypt_file(
-    source: Path,
-    output: Path,
-    add_size_mb: float,
-    delay: float,
-) -> Path:
-    """Encrypt a file into a standalone HBX1 container.
-
-    The final container size is ``original_size + round(add_size_mb * MIB)``,
-    reached by appending cryptographically random padding.
-
-    A fresh random key is generated for every encryption and written to a
-    sidecar ``.key`` file next to the output. The sidecar path is returned.
-    """
-
-    source = source.resolve()
-    output = output.resolve()
-
-    if not source.is_file():
-        raise ValueError(f"source file does not exist: {source}")
-    if source == output:
-        raise ValueError("source and output cannot be the same file")
-    if add_size_mb < 0:
-        raise ValueError("add_size_mb cannot be negative")
-
-    body, header, key = build_payload(source, delay)
-
-    requested_size = header["original_size"] + round(add_size_mb * MIB)
-    padding = padding_for(requested_size, len(body))
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    with output.open("wb") as handle:
-        handle.write(body)
-        if padding:
-            handle.write(os.urandom(padding))
-
-    actual_size = output.stat().st_size
-    if actual_size != requested_size:
-        raise RuntimeError(
-            "internal size verification failed: "
-            f"expected {requested_size}, got {actual_size}"
-        )
-
-    key_path = output.with_name(output.name + ".key")
-    key_path.write_text(b64_encode(key) + "\n", encoding="ascii")
-
-    # Best-effort restriction on Unix; Windows may ignore this.
-    try:
-        key_path.chmod(0o600)
-    except OSError:
-        pass
-
-    return key_path
-
-
-def load_key(key_path: Path) -> bytes:
-    """Read and validate a Base64-encoded AES-256 key."""
-    if not key_path.is_file():
-        raise ValueError(f"key file does not exist: {key_path}")
-
-    key = b64_decode(key_path.read_text(encoding="ascii").strip(), "key")
-    if len(key) != KEY_SIZE:
-        raise ValueError(
-            f"invalid AES-256 key length: expected {KEY_SIZE} bytes, "
-            f"got {len(key)}"
-        )
-    return key
-
-
-def _resolve_key(header: dict, key_path: Path | None) -> bytes:
-    """Return the key of a container from its sidecar key file."""
-
-    if key_path is None:
-        raise ValueError(
-            "cannot recover this file: it is a standalone encrypted container, "
-            "not a self-extracting runner. Only runners carry the key needed "
-            "to decrypt them."
-        )
-
-    return load_key(key_path)
-
-
 def decrypt_payload(
     header: dict,
     ciphertext: bytes,
@@ -200,17 +104,16 @@ def decrypt_payload(
 def decrypt_file(
     source: Path,
     output: Path,
-    key_path: Path | None = None,
     no_delay: bool = False,
 ) -> None:
-    """Recover the original plaintext from an HBX1 container or a runner.
+    """Recover the original plaintext from a Hidden-Bytes runner.
 
     The recovered file is written to disk only; it is never executed by this
-    function. A runner carries its key embedded in its launcher, so no key
-    file is needed; a plain ``.hbx`` container needs its key via ``key_path``.
+    function. The runner carries its key embedded in its launcher, so no key
+    file or passphrase is needed.
     """
 
-    from .runner import is_runner, read_runner_key
+    from .runner import is_runner, read_runner_container, read_runner_key
 
     source = source.resolve()
     output = output.resolve()
@@ -218,22 +121,26 @@ def decrypt_file(
     if source == output:
         raise ValueError("source and output cannot be the same file")
 
-    header, ciphertext = _read_any_container(source)
+    if not is_runner(source):
+        raise ValueError(
+            "input is not a Hidden-Bytes runner; only runners produced by "
+            "--encrypt carry the embedded key needed to recover them"
+        )
+
+    header, ciphertext = read_runner_container(source)
 
     delay = float(header["delay_seconds"])
     if delay and not no_delay:
         print(f"[INFO] Recovery delayed for {delay:g} second(s)...", flush=True)
         time.sleep(delay)
 
-    if is_runner(source):
-        key = read_runner_key(source)
-        if key is None:
-            raise ValueError(
-                "could not read the key embedded in this runner; a native "
-                "executable recovers its payload only by being run"
-            )
-    else:
-        key = _resolve_key(header, key_path)
+    key = read_runner_key(source)
+    if key is None:
+        raise ValueError(
+            "could not read the key embedded in this runner; a native "
+            "executable recovers its payload only by being run"
+        )
+
     plaintext = decrypt_payload(header, ciphertext, key)
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -241,14 +148,3 @@ def decrypt_file(
 
     if output.stat().st_size != int(header["original_size"]):
         raise RuntimeError("recovered file size verification failed")
-
-
-def _read_any_container(source: Path) -> tuple[dict, bytes]:
-    """Read a container from a plain ``.hbx`` file or from a runner."""
-
-    from .runner import is_runner, read_runner_container
-
-    if is_runner(source):
-        return read_runner_container(source)
-
-    return read_container(source)
