@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
+        default="10.1.12.4",
         help="address of the lab listener (default: 127.0.0.1)",
     )
     parser.add_argument(
