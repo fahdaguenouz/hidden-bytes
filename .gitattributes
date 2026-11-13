@@ -1,7 +1,0 @@
-# Normalize all text files to LF in the repo
-* text=auto eol=lf
-
-# Binary files Git must never touch
-*.png binary
-*.exe binary
-*.pyz binary
