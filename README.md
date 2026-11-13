@@ -12,7 +12,7 @@ Jump straight to [§4 — evasion](#4-tool-1--evasion--hbx1-container) or [§5 �
 ## Contents
 
 - [1. Project overview](#1-project-overview)
-- [2. Subject and audit scope](#2-subject-and-audit-scope)
+- [2. Subject and scope](#2-subject-and-scope)
 - [3. Requirements and setup](#3-requirements-and-setup)
 - [3.5. Building single-file executables](#35-building-single-file-executables)
 - [4. Tool 1 — Evasion / HBX1 container](#4-tool-1--evasion--hbx1-container)
@@ -20,10 +20,9 @@ Jump straight to [§4 — evasion](#4-tool-1--evasion--hbx1-container) or [§5 �
 - [6. End-to-end lab walkthrough](#6-end-to-end-lab-walkthrough)
 - [7. Technical concepts](#7-technical-concepts)
 - [8. Diagrams](#8-diagrams)
-- [9. Audit checklist and evidence](#9-audit-checklist-and-evidence)
-- [10. Defensive analysis](#10-defensive-analysis)
-- [11. Limitations and known caveats](#11-limitations-and-known-caveats)
-- [12. Ethics and lab safety](#12-ethics-and-lab-safety)
+- [9. Defensive analysis](#9-defensive-analysis)
+- [10. Limitations and known caveats](#10-limitations-and-known-caveats)
+- [11. Ethics and lab safety](#11-ethics-and-lab-safety)
 
 ---
 
@@ -50,78 +49,8 @@ Hidden-Bytes is a command-line educational project with two separate programs:
 - How defenders can investigate unusual file structure and behavior.
 
 ---
-## HBX1 Encryption and Recovery Flow
 
-### 1. Encryption flow
-
-
-```mermaid
-flowchart TD
-    A["Original file"] --> B["Read file bytes"]
-    B --> C["Generate a random AES-256 key"]
-    C --> D["Encrypt using AES-256-GCM"]
-    D --> E["Produce ciphertext and authentication tag"]
-    E --> F["Produce JSON metadata"]
-    F --> G["Build HBX1 container"]
-    G --> H["Embed the container and the key in a runner launcher"]
-    H --> I["Add random padding to the requested size"]
-    I --> K2["Write the self-extracting runner"]
-
-    G -. "Container contains magic bytes, header length, metadata, ciphertext and tag" .-> K["HBX1 format"]
-```
-
-### 2. Inspection and recovery flow
-
-```mermaid
-flowchart TD
-    A["Existing container or runner"] --> B["Read magic bytes and header length"]
-    B --> C["Parse JSON metadata"]
-    C --> D{"Requested operation?"}
-
-    D -- "Inspect" --> E["Display metadata"]
-    E --> F["Finish without decrypting"]
-
-    D -- "Decrypt" --> G["Read the key embedded in the runner"]
-    G --> H{"Delay enabled?"}
-    H -- "Yes" --> I["Wait for configured delay"]
-    H -- "No" --> J["Attempt authenticated decryption"]
-    I --> J
-
-    J --> K{"Authentication succeeds?"}
-    K -- "No" --> L["Report decryption failure"]
-    K -- "Yes" --> M["Write recovered file bytes"]
-    M --> N["Compare SHA-256 hashes"]
-    N --> O["Confirm byte-for-byte recovery"]
-```
-
-### 3. How to read the container
-
-```mermaid
-flowchart TD
-    A["HBX1 container"] --> B["4-byte magic value"]
-    B --> C["4-byte header length"]
-    C --> D["JSON metadata"]
-    D --> E["AES-GCM ciphertext"]
-    E --> F["16-byte authentication tag"]
-    F --> G["Random padding"]
-```
-
-**Important notes**
-
-- **Magic value:** identifies the container format.
-- **Header length:** a 4-byte unsigned, big-endian integer specifying the JSON metadata length in bytes.
-- **JSON metadata:** stores information such as the algorithm, nonce, original filename, original size, ciphertext length, and recovery delay.
-- **Ciphertext and authentication tag:** AES-256-GCM encrypts the original bytes and produces a tag used to verify authenticity and integrity during decryption.
-- **Random padding:** increases the artifact size; it is not part of the original file and does not strengthen the encryption.
-- **Recovery delay:** the delay is stored in the metadata and enforced before the payload is recovered. The runner *artifact* enforces it when run, and `--decrypt` also honours it unless `--no-delay` is given.
-- **SHA-256 comparison:** matching hashes provide evidence that the recovered file is byte-for-byte identical to the original.
-
-**Note:** `--inspect` displays metadata without authenticating the ciphertext. Authentication is checked when decryption is attempted.
-
-
----
-
-## 2. Subject and audit scope
+## 2. Subject and scope
 
 The subject asks for binary manipulation, encryption, file-size changes, delayed behavior, polymorphism, a reverse-shell payload, and testing against antivirus detection. The table below maps each subject/audit item to where it is implemented and how to demonstrate it during the audit.
 
@@ -137,7 +66,7 @@ The subject asks for binary manipulation, encryption, file-size changes, delayed
 | Stable behavior | Same payload behaviour on every run | Capture output from multiple runs |
 | Reverse-shell connection | Implemented in `lab/reverse_shell_payload.py`; the target address and port are always operator-supplied | Start `lab/listener.py`, run the generated program with `--host`/`--port`, then type a command |
 | Native Windows PE output | Produced automatically when the `--output` name ends in `.exe` (PyInstaller) inside the VM | A `.py` file or `.exe` filename does not by itself establish PE validity; check the file type |
-| Defender / VirusTotal testing | Measured in the VM against the real Defender and VirusTotal | Run `lab/defender_scan.ps1` and `lab/vt_check.py`; record the verdict and detection ratio actually observed |
+| Defender / VirusTotal testing | Measured in the VM against the real Defender and VirusTotal | Scan the artifact with Microsoft Defender (`MpCmdRun.exe -Scan -ScanType 3 -File <artifact>`, or run `lab/mal_audit.ps1` for the EICAR before/after) and upload your own artifact to [VirusTotal](https://www.virustotal.com); record the verdict and detection ratio actually observed |
 | Isolated Windows VM | Must be verified manually by the auditor | Capture hypervisor network and integration settings |
 
 **Important audit wording:** the delay is enforced by the **artifact itself** in runner mode — the produced file waits, then decrypts and launches the payload. The tool does not need to be running for the wait to happen. The delay is a *pre-execution* delay: the payload has not started yet when the wait ends.
@@ -177,15 +106,11 @@ hidden-bytes/
 │       ├── runner.py
 │       └── runner_template.py
 ├── lab/
-│   ├── audit_demo.ps1            # one-command EICAR before/after Defender demo
+│   ├── mal_audit.ps1            # one-command EICAR before/after Defender demo
 │   ├── build_eicar_evaded.py     # encrypt EICAR with the tool (in memory)
 │   ├── detect_positive_control.py# write a plaintext EICAR (always detected)
-│   ├── defender_scan.ps1         # scan an artifact with the real Defender
-│   ├── vt_check.py               # upload your own artifact to VirusTotal
-│   ├── detect_surface.py         # local, read-only look at what a scanner sees
 │   ├── reverse_shell_payload.py  # operator-addressed reverse shell (lab only)
-│   ├── listener.py               # receives the reverse-shell connection
-│   └── vm_preflight.ps1 / .sh    # verify the VM is isolated before the audit
+│   └── listener.py               # receives the reverse-shell connection
 ├── tests/
 ├── evasion
 ├── polymorphic
@@ -246,39 +171,21 @@ Before any Windows demonstration, ask the auditor to verify:
 
 A README cannot prove the VM is isolated. Isolation must be checked in the hypervisor settings.
 
-### Validate the VM yourself, before the audit
 
-Because you build inside the VM every day, run the preflight check at the start of your session. It reports the isolation and toolchain state and gives you a file to hand to the auditor as evidence.
+Verify these manually before demonstrating (nothing in this repository changes a VM or Defender setting):
 
-**Windows (native, in the VM):**
-
-```powershell
-powershell -ExecutionPolicy Bypass -File lab\vm_preflight.ps1 |
-    Tee-Object -FilePath audit\vm-preflight.txt
-```
-
-**Windows (from Git Bash or WSL):**
-
-```bash
-bash lab/vm_preflight.sh | tee audit/vm-preflight.txt
-```
-
-The check covers:
-
-| Area | What it verifies |
+| Area | What to confirm |
 |---|---|
-| Operating system | Windows 10 or 11, and a supported build number |
+| Operating system | Windows 10 or 11 |
 | Network isolation | No default gateway, public DNS fails, outbound HTTPS blocked |
-| Python toolchain | Interpreter version, `cryptography`, `PyInstaller` |
-| Tool smoke test | Both CLIs start and the test suite collects |
-| Defender | Real-time protection on, no path exclusions, signature age, prior detections |
-
-It is read-only: it inspects and reports, and it changes no setting.
+| Python toolchain | Interpreter version and `cryptography` (plus `PyInstaller` for `.exe` builds) |
+| Tool smoke test | Both CLIs start (`--help`) and the test suite runs |
+| Defender | Real-time protection on, and no path exclusions (check `Get-MpPreference`) |
 
 Two results deserve attention:
 
 - **A public DNS or HTTPS check that passes means the VM is not isolated.** Fix the adapter mode before you demonstrate anything.
-- **Defender path exclusions matter for the audit.** If the demo folder is excluded, a local scan will not flag the artifact, and that is not evidence of anything. The preflight reports any exclusions so you and the auditor can talk about it.
+- **Defender path exclusions matter for the audit.** If the demo folder is excluded, a local scan will not flag the artifact, and that is not evidence of anything. Check for exclusions and discuss any you find with the auditor.
 
 ### 3.5 Building single-file executables
 
@@ -325,52 +232,20 @@ automatically. The encrypted payload and the random key are embedded in the
 executable; no passphrase is required at run time.
 
 
-### What the audit's detection checks actually require
-
-Audit items 7 and 8 are measurements you run in the VM. Nothing you write into the tool makes Defender miss a file; what decides the result is what the file looks like when a scanner opens it, and the only way to know is to measure it.
-
-That splits the work in two:
-
-**Part 1 — make the artifact a reasonable thing to scan.** This is code, and it is now done:
-
-- The payload is encrypted, so it does not appear in the file in cleartext.
-- The artifact is a **real PE executable**, because an output path ending in `.exe` is packaged natively by default. A Python archive renamed `.exe` does not run on Windows and no scanner analyses it as a program.
-- The size increase is exact, so the file is the size the audit asks for.
-
-**Part 2 — measure it.** This is a procedure, and the tooling is in `lab/`:
-
-```bash
-# What can a scanner see in this file? Local, read-only, nothing uploaded.
-python3 lab/detect_surface.py evaded_program.exe
-```
-
-```powershell
-# In the Windows VM: scan with the real Defender and record the verdict.
-powershell -ExecutionPolicy Bypass -File lab\defender_scan.ps1 -Path .\evaded_program.exe
-```
-
-```bash
-# Upload your own artifact to VirusTotal and read the detection ratio.
-export VT_API_KEY='your-virustotal-api-key'
-python3 lab/vt_check.py evaded_program.exe
-```
-
-`vt_check.py` prints the bypass rate the audit asks for and exits non-zero when the 60% threshold is not met. **Only upload artifacts you created yourself.** A VirusTotal sample is published to a public multi-scanner service and may be shared onward.
-
 #### Measured result (this project)
 
 The evasion artifact (`res.exe`, a native `.exe` runner wrapping a harmless test payload) was uploaded to VirusTotal. **Only 2 of 62 engines flagged it**, i.e. a **~97% bypass rate** — well above the subject's 60% threshold.
 
-![VirusTotal detection result: 2 of 62 vendors flagged the evasion artifact](virus-total.png)
+![VirusTotal detection result: 2 of 62 vendors flagged the evasion artifact](resources/img/virus-total.png)
 
-Reading the result honestly: the two detections are **generic heuristic flags on the PyInstaller/packed-executable stub, not signature matches on the payload** (the payload only prints a banner). This is itself a useful teaching point — it is the *packing technique*, not the payload, that the two engines react to, which is exactly the behaviour-based detection the [defensive analysis](#10-defensive-analysis) recommends. Because the wrapped payload is benign, a low score also partly reflects that there was little malicious content to match in the first place; a stronger before/after demonstration encrypts a sample a scanner is known to flag (such as the EICAR test file) and shows the detection ratio drop after packaging.
+Reading the result honestly: the two detections are **generic heuristic flags on the PyInstaller/packed-executable stub, not signature matches on the payload** (the payload only prints a banner). This is itself a useful teaching point — it is the *packing technique*, not the payload, that the two engines react to, which is exactly the behaviour-based detection the [defensive analysis](#9-defensive-analysis) recommends. Because the wrapped payload is benign, a low score also partly reflects that there was little malicious content to match in the first place. The EICAR before/after demonstration below shows the same effect with a sample Defender is guaranteed to flag.
 
 #### EICAR before/after demo — one command
 
 This is the stronger demonstration referred to above, ready to run. It proves, against the real Windows Defender, that a file carrying a **known malware signature is detected in the clear but invisible once this tool encrypts it** — and that nothing was faked, because decrypting it brings the detection straight back. It uses the [EICAR test string](https://www.eicar.org/download-anti-malware-testfile/), a harmless, industry-standard file every antivirus flags on purpose, so no real malware is involved. Run it from the project root inside the VM:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File lab\audit_demo.ps1
+powershell -ExecutionPolicy Bypass -File lab\mal_audit.ps1
 ```
 
 The script changes **no Defender setting** (no exclusions, real-time protection left on) and regenerates every artifact from source, so **no binary or `.pyz` needs to be committed to the repository**. It runs four steps and then prints Defender's own threat log as evidence:
@@ -388,7 +263,7 @@ The demo is driven by three small source files in `lab/`:
 
 | File | What it does |
 |---|---|
-| `lab/audit_demo.ps1` | Orchestrates the four steps above and prints the threat log. Accepts `-PythonExe <path>` if `py` is not on `PATH`. |
+| `lab/mal_audit.ps1` | Orchestrates the four steps above and prints the threat log. Accepts `-PythonExe <path>` if `py` is not on `PATH`. |
 | `lab/detect_positive_control.py` | Writes a plaintext EICAR file (a *positive control* — a program Defender is guaranteed to detect), assembling the string from fragments so the script itself is not flagged. |
 | `lab/build_eicar_evaded.py` | Encrypts the EICAR payload with the evasion tool. Because Defender quarantines a plaintext EICAR file the instant it is written, the payload is held **in memory** and handed to the tool through an in-memory stand-in for the input file, so no plaintext is ever written to disk and no Defender setting is touched. Add `--exe` to build a native `.exe` instead of a `.pyz`. |
 
@@ -761,13 +636,19 @@ Two practical notes for the `.exe` build:
 
 An output name ending in `.exe` is packaged into a native executable automatically; any other name produces the Python-archive runner.
 
-Check what you actually produced:
+Check what you actually produced — confirm it is a real PE (starts with `MZ`), not a renamed script:
 
-```bash
-python3 lab/detect_surface.py evaded_program.exe
+```powershell
+# PowerShell: the first two bytes of a Windows PE are "MZ"
+[System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes("evaded_program.exe")[0..1])
 ```
 
-This reports the real file type, the PE structure, the section entropy and the size of the high-entropy region. It reads the file only — nothing is uploaded and nothing is executed.
+```bash
+# Linux/macOS or Git Bash:
+file evaded_program.exe
+```
+
+This reads the file only — nothing is uploaded and nothing is executed.
 
 ### 4.4 Other useful test commands
 
@@ -945,7 +826,7 @@ flowchart TD
 - **Size manipulation:** padding makes the final artifact reach the requested size increase, exactly.
 - **Delay:** the wait is enforced **by the produced artifact** before the payload is launched, and it is also honored by `--decrypt`.
 - **Integrity evidence:** matching original/recovered SHA-256 hashes demonstrates successful byte-for-byte recovery.
-- **Detection testing:** the Defender and VirusTotal results are measured on the artifact in the VM (see [§3.5](#what-the-audits-detection-checks-actually-require)); report the verdict and ratio you actually observe, not an assumed number.
+- **Detection testing:** the Defender and VirusTotal results are measured on the artifact in the VM (see [§3.5](#35-building-single-file-executables)); report the verdict and ratio you actually observe, not an assumed number.
 - **Key handling:** the random AES-256 key is embedded in the runner artifact so it can recover its payload without a passphrase or separate key file. The artifact therefore *is* the secret — anyone who can read the runner can recover the payload, so protect the artifact with access controls and do not commit it to version control.
 - **Execution:** the runner launches the recovered program as a child process after the delay, prints what it is doing, and removes its temporary directory.
 
@@ -1124,6 +1005,14 @@ python3 -m src.polymorphic \
   --generate polymorphic.exe \
   --payload lab/reverse_shell_payload.py
 ```
+
+To build a script-based runner instead of a native `.exe` (useful for the polymorphism/hash-change demo, since a frozen `.exe` cannot rewrite its own on-disk hash), generate a `.pyz`:
+
+```bash
+python -m src.polymorphic --generate revshell.pyz --payload lab/reverse_shell_payload.py
+```
+
+Run the `.pyz` with your interpreter (`python revshell.pyz`); run the `.exe` directly (`./polymorphic.exe`). Both forward their arguments to the payload, so `--host`/`--port` reach the reverse shell.
 
 In a second terminal, start the listener on the address the payload will call back:
 
@@ -1386,69 +1275,8 @@ flowchart LR
 
 ---
 
-## 9. Audit checklist and evidence
 
-Use this checklist during the audit. Mark an item only after collecting evidence.
-
-- [ ] **Setup:** record Python version and installed dependencies.
-- [ ] **Isolation:** capture the VM's network mode and disabled integration features.
-- [ ] **Encryption:** show the generated runner artifact (`.pyz` on Linux, `.exe` on the Windows VM).
-- [ ] **Container structure:** capture `--inspect` output and explain each field.
-- [ ] **Size:** record the original and final byte lengths and verify the configured increase is exact.
-- [ ] **Delay:** demonstrate a non-zero delay **in the produced artifact** (runner mode), and time it.
-- [ ] **Recovery:** compare original and recovered SHA-256 hashes.
-- [ ] **Integrity failure:** record that recovery with an incorrect key or tampered ciphertext fails authentication.
-- [ ] **Key protection:** explain that the runner's embedded key is required for recovery, so the artifact itself is the secret and must be protected with access controls.
-- [ ] **Polymorphism:** show that two independently generated variants have different hashes.
-- [ ] **Self-modification:** show a generated program's hash before and after execution.
-- [ ] **Stable output:** preserve output from multiple runs and show that the message stays the same.
-- [ ] **Reverse shell:** with the listener running, show the connection being accepted, the peer address, and a command executed on the far side.
-- [ ] **Safety review:** confirm the reverse shell reaches only the operator-chosen address, and that there is no persistence, no scanning and no evasion in the demonstration.
-- [ ] **VM isolation:** run `lab/vm_preflight.ps1` in the VM and save the output as evidence.
-- [ ] **Detection surface:** run `lab/detect_surface.py` on the artifact and save the report.
-- [ ] **Defender:** run `lab/defender_scan.ps1` and record the verdict exactly as observed.
-- [ ] **VirusTotal:** run `lab/vt_check.py` on your own artifact and record the measured ratio. *(Captured for this project: 2/62 detections — see [the measured result in §3.5](#measured-result-this-project) and `virus-total.png`.)*
-- [ ] **Limitations:** report the measured detection result, not a claim. Identify what the result depends on.
-- [ ] **Evidence handling:** store logs/screenshots and test hashes without exposing key contents.
-
-### Suggested evidence directory
-
-```text
-audit/
-├── environment.txt
-├── vm-isolation.png
-├── evasion-inspect.json
-├── runner-inspect.json
-├── size-results.txt
-├── runner-timing.txt
-├── recovery-hashes.txt
-├── wrong-key-test.txt
-├── polymorphic-hashes.txt
-├── polymorphic-output.txt
-└── limitations-and-findings.md
-```
-
-These are suggested evidence filenames; the tools do not automatically create this directory or capture screenshots.
-
-### Automated tests
-
-Run the repository's tests from its root:
-
-```bash
-python3 -m pytest -q
-```
-
-On Windows:
-
-```powershell
-py -m pytest -q
-```
-
-A passing test suite is useful evidence but does not replace the manual isolation check or the demonstrations above. If no test file covers a requirement, report that gap instead of assuming it was tested.
-
----
-
-## 10. Defensive analysis
+## 9. Defensive analysis
 
 The project illustrates patterns that defenders can investigate, but no single indicator is a reliable verdict.
 
@@ -1466,7 +1294,7 @@ Recommended controls include application control/allowlisting, least privilege, 
 
 ---
 
-## 11. Limitations and known caveats
+## 10. Limitations and known caveats
 
 1. **Detection results are measured, not engineered:** the tool encrypts, pads and packages the artifact, but it implements no dedicated anti-AV trick. The Defender and VirusTotal outcome depends on what a scanner sees in the artifact and must be measured in the VM — report the number you observe.
 2. **The runner launches the payload, it does not disguise it:** the recovered program is started as a child process of the runner. There is no process hollowing or injection, and the delay is announced on stdout.
@@ -1481,24 +1309,8 @@ Recommended controls include application control/allowlisting, least privilege, 
 
 ---
 
-## 12. Ethics and lab safety
+## 11. Ethics and lab safety
 
 Binary encryption, file mutation, self-modification and reverse shells are dual-use. Test only in a written, authorized scope with owned samples and an isolated environment. Keep snapshots, use harmless payloads, restrict the reverse shell to a lab address you control, and restore the VM after the exercise.
 
 Do not disable endpoint protection outside the lab, deploy these payloads on systems you do not control, upload confidential third-party binaries to public multi-scanner services, or point the reverse shell at a machine you do not own or have written permission to test. Report findings honestly and preserve the evidence needed for another reviewer to reproduce the results.
-
-### Questions to prepare for the stakeholder / auditor
-
-- What is the HBX1 format and how is it parsed?
-- Why is AES-GCM used, and what happens if the key or ciphertext is wrong?
-- Why must a GCM nonce not be reused with the same key?
-- How is the final artifact size calculated, and is the increase exact?
-- At what stage is the delay enforced, and who enforces it — the tool or the artifact?
-- Where is the key stored, and what is the security consequence of embedding it in the runner artifact?
-- Why does the runner decrypt with the `cryptography` library, and how does the `.exe` carry it?
-- What changes in a polymorphic run, and what remains stable?
-- Why can a whole-file hash change without a meaningful change in behavior?
-- How does a reverse shell work, and what does it look like to a defender?
-- Why does encrypting and randomising a file not stop the connection from being seen?
-- What Defender and VirusTotal results did the artifact produce, and what drives them?
-- What evidence supports each audit claim?
