@@ -107,7 +107,13 @@ def main():
         "__file__": "payload",
         "__builtins__": __builtins__,
     }
-    exec(code, namespace)  # noqa: S102
+    try:
+        exec(code, namespace)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - report and stop
+        print("[ERROR] payload failed at runtime: " + str(exc), file=sys.stderr)
+        return 1
 
     return 0
 
