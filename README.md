@@ -177,6 +177,15 @@ hidden-bytes/
 │       ├── runner.py
 │       └── runner_template.py
 ├── lab/
+│   ├── audit_demo.ps1            # one-command EICAR before/after Defender demo
+│   ├── build_eicar_evaded.py     # encrypt EICAR with the tool (in memory)
+│   ├── detect_positive_control.py# write a plaintext EICAR (always detected)
+│   ├── defender_scan.ps1         # scan an artifact with the real Defender
+│   ├── vt_check.py               # upload your own artifact to VirusTotal
+│   ├── detect_surface.py         # local, read-only look at what a scanner sees
+│   ├── reverse_shell_payload.py  # operator-addressed reverse shell (lab only)
+│   ├── listener.py               # receives the reverse-shell connection
+│   └── vm_preflight.ps1 / .sh    # verify the VM is isolated before the audit
 ├── tests/
 ├── evasion
 ├── polymorphic
@@ -355,6 +364,37 @@ The evasion artifact (`res.exe`, a native `.exe` runner wrapping a harmless test
 ![VirusTotal detection result: 2 of 62 vendors flagged the evasion artifact](virus-total.png)
 
 Reading the result honestly: the two detections are **generic heuristic flags on the PyInstaller/packed-executable stub, not signature matches on the payload** (the payload only prints a banner). This is itself a useful teaching point — it is the *packing technique*, not the payload, that the two engines react to, which is exactly the behaviour-based detection the [defensive analysis](#10-defensive-analysis) recommends. Because the wrapped payload is benign, a low score also partly reflects that there was little malicious content to match in the first place; a stronger before/after demonstration encrypts a sample a scanner is known to flag (such as the EICAR test file) and shows the detection ratio drop after packaging.
+
+#### EICAR before/after demo — one command
+
+This is the stronger demonstration referred to above, ready to run. It proves, against the real Windows Defender, that a file carrying a **known malware signature is detected in the clear but invisible once this tool encrypts it** — and that nothing was faked, because decrypting it brings the detection straight back. It uses the [EICAR test string](https://www.eicar.org/download-anti-malware-testfile/), a harmless, industry-standard file every antivirus flags on purpose, so no real malware is involved. Run it from the project root inside the VM:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File lab\audit_demo.ps1
+```
+
+The script changes **no Defender setting** (no exclusions, real-time protection left on) and regenerates every artifact from source, so **no binary or `.pyz` needs to be committed to the repository**. It runs four steps and then prints Defender's own threat log as evidence:
+
+| Step | What it does | Expected Defender verdict |
+|---|---|---|
+| 1 | Writes the plaintext EICAR payload and scans it | 🔴 `found 1 threats` — `Virus:DOS/EICAR_Test_File` |
+| 2 | Encrypts the **same** payload with the evasion tool | artifact built (`lab/eicar_evaded.pyz`) |
+| 3 | Scans the encrypted artifact | 🟢 `found no threats` |
+| 4 | Decrypts it back to plaintext and scans/observes the result | 🔴 detected & deleted |
+
+The one-line takeaway for the auditor: **encrypted = clean, plaintext/decrypted = detected → the AES-256-GCM encryption is the only variable that changed the verdict.** As with the VirusTotal result, this demonstrates *static-scan* evasion (hiding a signature inside ciphertext); it does **not** claim to defeat behavioural/runtime detection — step 4 shows Defender catches the payload the instant it exists in the clear.
+
+The demo is driven by three small source files in `lab/`:
+
+| File | What it does |
+|---|---|
+| `lab/audit_demo.ps1` | Orchestrates the four steps above and prints the threat log. Accepts `-PythonExe <path>` if `py` is not on `PATH`. |
+| `lab/detect_positive_control.py` | Writes a plaintext EICAR file (a *positive control* — a program Defender is guaranteed to detect), assembling the string from fragments so the script itself is not flagged. |
+| `lab/build_eicar_evaded.py` | Encrypts the EICAR payload with the evasion tool. Because Defender quarantines a plaintext EICAR file the instant it is written, the payload is held **in memory** and handed to the tool through an in-memory stand-in for the input file, so no plaintext is ever written to disk and no Defender setting is touched. Add `--exe` to build a native `.exe` instead of a `.pyz`. |
+
+> **Why not just `--encrypt` an EICAR file?** Defender's real-time filter deletes a plaintext EICAR file before the tool can read it, so the normal `python -m src.evasion --encrypt <file>` route fails on the input. That failure is itself proof the raw payload is detected; `build_eicar_evaded.py` works around it in memory **without** weakening Defender.
+
+For a clean screenshot, run `Remove-MpThreat` first to clear Defender's handled-threat history (this clears history only; it changes no setting).
 
 #### What to report if the measurement fails
 
