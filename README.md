@@ -15,6 +15,7 @@ Jump straight to [§4 — evasion](#4-tool-1--evasion--hbx1-container) or [§5 �
 - [2. Subject and scope](#2-subject-and-scope)
 - [3. Requirements and setup](#3-requirements-and-setup)
 - [3.5. Building single-file executables](#35-building-single-file-executables)
+- [3.6. Building the bundled demo artifacts](#36-building-the-bundled-demo-artifacts)
 - [4. Tool 1 — Evasion / HBX1 container](#4-tool-1--evasion--hbx1-container)
 - [5. Tool 2 — Polymorphic generator](#5-tool-2--polymorphic-generator)
 - [6. End-to-end lab walkthrough](#6-end-to-end-lab-walkthrough)
@@ -80,10 +81,10 @@ The subject asks for binary manipulation, encryption, file-size changes, delayed
 ### Prerequisites
 
 - Python 3.10 or newer.
-- The packages listed in `requirements-dev.txt` (including `cryptography`, `pytest` and `pefile`).
+- The packages listed in `requirements.txt` (`cryptography`, `pyinstaller`, `pytest` and `pefile`).
 - A terminal: PowerShell on Windows, or a shell on Linux/macOS.
 - For the subject demonstration, a dedicated Windows 10/11 virtual machine configured and inspected by the auditor.
-- Optional, only for a native `.exe` build: `python -m pip install pyinstaller` **inside the isolated VM**. The Windows bootloader ships with the Windows package, so the build must happen in the VM.
+- `pyinstaller` is included in `requirements.txt`, but a **native Windows `.exe` must be built inside the isolated Windows VM**: PyInstaller's bootloader is platform-specific, so the Windows PE is produced only by PyInstaller running on Windows.
 
 ### Repository layout
 
@@ -118,7 +119,6 @@ hidden-bytes/
 ├── evasion
 ├── polymorphic
 ├── requirements.txt
-├── requirements-dev.txt
 └── README.md
 ```
 
@@ -129,7 +129,7 @@ Run every command below from the **project root** so that the `src` package is i
 ```powershell
 py -m venv .venv
 .venv\Scripts\Activate.ps1
-py -m pip install -r requirements-dev.txt
+py -m pip install -r requirements.txt
 
 py -m src.evasion --help
 py -m src.polymorphic --help
@@ -142,7 +142,7 @@ If PowerShell blocks virtual-environment activation due to local policy, use the
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements-dev.txt
+python3 -m pip install -r requirements.txt
 
 python3 -m src.evasion --help
 python3 -m src.polymorphic --help
@@ -234,6 +234,47 @@ executable; no passphrase is required at run time.
 The evasion artifact (`res.exe`, a native `.exe` runner wrapping a harmless test payload) was uploaded to VirusTotal. **Only 2 of 62 engines flagged it**, i.e. a **~97% bypass rate** — well above the subject's 60% threshold.
 
 ![VirusTotal detection result: 2 of 62 vendors flagged the evasion artifact](resources/img/virus-total.png)
+
+### 3.6 Building the bundled demo artifacts
+
+The repository ships two small, ready-to-inspect demo builds produced by the two
+tools: `demo.pyz` (an evasion runner) and `poly.py` (a polymorphic program).
+They are tool **outputs** — regenerate them from source whenever the code
+changes. Both are built from two harmless demo payloads:
+
+```bash
+# demo payloads (harmless)
+printf 'print("Hello from the payload!")\n' > prog.py
+printf 'print("payload ran")\n'            > demo_payload.py
+```
+
+**Evasion demo — `demo.pyz`** (a `.pyz` self-extracting runner; the delay is the
+stealth default, so add `--delay 0` if you want to run it without waiting):
+
+```bash
+python3 -m src.evasion --encrypt prog.py --output demo.pyz --delay 101
+```
+
+Inspect what the build produced by unzipping it into `peek/`:
+
+```bash
+cd peek && unzip -o ../demo.pyz && cd ..   # -> __main__.py  payload.hbx  padding.bin
+```
+
+**Polymorphic demo — `poly.py`** (rewrites its own hash on every run):
+
+```bash
+python3 -m src.polymorphic --generate poly.py --payload demo_payload.py
+```
+
+Verify the polymorphic build actually mutates while its behaviour stays fixed:
+
+```bash
+sha256sum poly.py; python3 poly.py; sha256sum poly.py   # the two hashes differ; output is identical
+```
+
+> For a native Windows `.exe` demo instead of these Python-archive builds, use
+> the same commands with an `.exe` output name inside the VM (see Section 3.5).
 
 Reading the result honestly: the two detections are **generic heuristic flags on the PyInstaller/packed-executable stub, not signature matches on the payload** (the payload only prints a banner). This is itself a useful teaching point — it is the *packing technique*, not the payload, that the two engines react to, which is exactly the behaviour-based detection the [defensive analysis](#9-defensive-analysis) recommends. Because the wrapped payload is benign, a low score also partly reflects that there was little malicious content to match in the first place. The EICAR before/after demonstration below shows the same effect with a sample Defender is guaranteed to flag.
 
@@ -749,12 +790,12 @@ The launcher and the container are kept in a zip container, with the payload sto
 A common point of confusion: when you use the CLI, there is **no separate `.hbx` file on disk**. The runner *is* the only file you get, and the HBX1 container lives **inside** it as a zip member named `payload.hbx`. You only see it as a loose file after you `unzip` the runner (Step 6 above).
 
 ```text
-demo.pyz   ← THE RUNNER   (the one file the CLI made — e.g. 20,984 bytes on disk)
+demo.pyz   ← THE RUNNER   (the one file the CLI made — e.g. 10,519 bytes on disk)
 │
 │  it is a zip, so inside it are three members:
-├── __main__.py   (11,312 b)  ← the launcher: run-time code + embedded key + AES
-├── payload.hbx   (   178 b)  ← THE CONTAINER: the HBX1 encrypted blob
-└── padding.bin   (16,561 b)  ← random filler for the exact size
+├── __main__.py   (4,307 b)   ← the launcher: run-time code + embedded key + AES
+├── payload.hbx   (  201 b)   ← THE CONTAINER: the HBX1 encrypted blob
+└── padding.bin   (8,285 b)   ← random filler for the exact size
 ```
 
 - **The runner** = `demo.pyz` — a real file in your folder. This is what you run.
