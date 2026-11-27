@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -93,8 +94,12 @@ func (g *PolymorphicGenerator) DecryptPayload() ([]byte, error) {
 }
 
 // GenerateSourceTemplate returns a source code template for the polymorphic program.
+// Uses direct string building with bytes.Buffer instead of text/template.
+// This is the Go idiomatic alternative to Python-style string replacement.
 func (g *PolymorphicGenerator) GenerateSourceTemplate() string {
-	return fmt.Sprintf(`package main
+	var sb bytes.Buffer
+
+	sb.WriteString(`package main
 
 import (
 	"crypto/aes"
@@ -105,9 +110,15 @@ import (
 )
 
 const (
-	PAYLOAD_CIPHERTEXT = "%s"
-	PAYLOAD_NONCE = "%s"
-	PAYLOAD_KEY = "%s"
+	PAYLOAD_CIPHERTEXT = "`)
+	sb.WriteString(g.Ciphertext())
+	sb.WriteString(`"
+	PAYLOAD_NONCE = "`)
+	sb.WriteString(g.NonceBase64())
+	sb.WriteString(`"
+	PAYLOAD_KEY = "`)
+	sb.WriteString(g.KeyBase64())
+	sb.WriteString(`"
 )
 
 func main() {
@@ -116,24 +127,26 @@ func main() {
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error creating cipher: %%v\n", err)
+		fmt.Fprintf(os.Stderr, "error creating cipher: %v\\n", err)
 		os.Exit(1)
 	}
 
 	aesgcm, err := cipher.NewGCM(block)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error creating GCM: %%v\n", err)
+		fmt.Fprintf(os.Stderr, "error creating GCM: %v\\n", err)
 		os.Exit(1)
 	}
 
 	ciphertext, _ := base64.StdEncoding.DecodeString(PAYLOAD_CIPHERTEXT)
 	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error decrypting payload: %%v\n", err)
+		fmt.Fprintf(os.Stderr, "error decrypting payload: %v\\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Payload decrypted successfully: %%d bytes\n", len(plaintext))
+	fmt.Fprintf(os.Stderr, "Payload decrypted successfully: %d bytes\\n", len(plaintext))
 }
-`, g.Ciphertext(), g.NonceBase64(), g.KeyBase64())
+`)
+
+	return sb.String()
 }
