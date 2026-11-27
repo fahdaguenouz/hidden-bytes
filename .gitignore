@@ -7,3 +7,12 @@ __pycache__/
 
 peek/polymorphic.exe
 build/
+
+# Built binaries (root only, not src/ subdirectories)
+/evasion
+/polymorphic
+/keyserver
+/hello.exe
+/evaded.exe
+/poly.exe
+/payload.py
