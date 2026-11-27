@@ -235,7 +235,7 @@
     </div>
     <div class="feat" style="margin-top:14px">
       <div class="fcard"><div class="ico">🔑</div><h3>Key — 256 bits</h3>
-        <p>A fresh 32-byte random key per file, from Go's <code>crypto/rand</code>. Never a password. The key is stored in the trailer metadata so the runner can unlock itself.</p>
+        <p>A fresh 32-byte random key per file, from Go's <code>crypto/rand</code>. Never a password. By default the key is stored in the trailer. With <code>--c2-url</code>, it is sent to a remote key server instead.</p>
         <span class="mapto">crypto/rand (32 bytes)</span></div>
       <div class="fcard"><div class="ico">🎲</div><h3>Nonce — 96 bits</h3>
         <p>A one-time random number used once per encryption. Reusing a nonce with the same key would break GCM — so a new one is drawn every time.</p>
@@ -283,13 +283,13 @@
         <div class="layer body"><b>🔒 AES-256-GCM ciphertext + tag</b>
           <small>the encrypted original file — opaque to scanners</small></div>
         <div class="layer trailer"><b>📋 JSON metadata trailer</b>
-          <small>key, nonce, delay, original name/size, ciphertext length</small>
-          <span class="keybadge">🔑 AES key stored HERE (base64)</span></div>
+          <small>key + nonce (default), OR key_id + c2_url (C2 mode), delay, name/size</small>
+          <span class="keybadge">🔑 Key HERE (default) · or key_id only (C2 mode)</span></div>
         <div class="layer" style="background:rgba(47,224,208,.12)"><b>📐 metaLen (4 B) + "HBX1" (4 B)</b>
           <small>the footer the runner reads first — backward from the end of the file</small></div>
       </div>
       <div class="facts2">
-        <div class="fact"><div class="q">where is the key?</div><div class="a">in the JSON metadata trailer, base64-encoded</div></div>
+        <div class="fact"><div class="q">where is the key?</div><div class="a">Default: in the trailer (base64). C2 mode (<code>--c2-url</code>): on the remote key server — only a key_id is in the file</div></div>
         <div class="fact"><div class="q">can it run itself?</div><div class="a yes">yes — waits for the delay, decrypts, launches</div></div>
         <div class="fact"><div class="q">is it a real .exe?</div><div class="a yes">yes — starts with MZ, valid Windows PE</div></div>
         <div class="fact"><div class="q">how does the stub find the payload?</div><div class="a">reads backward from the end: magic → metaLen → JSON → ciphertext</div></div>
@@ -349,12 +349,35 @@
       <p>A pre-execution wait. Many sandboxes time out before it ends and see nothing.</p>
       <span class="mapto">metadata.Delay · time.Sleep · runner.src</span></div>
     <div class="fcard"><div class="ico">🎁</div><h3>Self-extract</h3>
-      <p>The key rides in the trailer, so the artifact unlocks and launches itself. The Go stub is compiled at encryption time.</p>
+      <p>By default the key is in the trailer. With <code>--c2-url</code>, the runner fetches the key from a remote server at runtime — no key in the file.</p>
       <span class="mapto">runner.src (embedded, cross-compiled)</span></div>
   </div>
 
   <div class="tldr"><b>Defender's takeaway:</b> size and timing alone can blind signature and sandbox
     scanners — which is exactly why modern defense watches <i>behaviour at runtime</i>, not just the file.</div>
+
+  <!-- 7. C2 key server mode -->
+  <h2><span class="idx">07</span> C2 Key Server mode</h2>
+  <p class="sub">With <code>--c2-url</code>, the AES key is sent to a remote server at encryption time
+     and fetched by the runner at execution time. The file contains only a <code>key_id</code> — no key, no nonce.</p>
+  <div class="panel">
+    <div class="feat">
+      <div class="fcard"><div class="ico">📡</div><h3>Encrypt → POST key</h3>
+        <p>At build time, the tool sends the key to the C2 server and stores only a <code>key_id</code> reference in the metadata.</p>
+        <span class="mapto">encrypt.go → sendKeyToServer()</span></div>
+      <div class="fcard"><div class="ico">🔑</div><h3>Run → GET key</h3>
+        <p>At runtime, the runner calls <code>GET /keys/{id}</code> to fetch the key before decryption. No server = no decryption.</p>
+        <span class="mapto">runner.src → fetchKeyFromServer()</span></div>
+      <div class="fcard"><div class="ico">🔥</div><h3>Burn-after-reading</h3>
+        <p>Start the server with <code>--burn</code>: each key is deleted after the first fetch. The binary works exactly once.</p>
+        <span class="mapto">keyserver --burn</span></div>
+      <div class="fcard"><div class="ico">🔄</div><h3>Backward compatible</h3>
+        <p>Without <code>--c2-url</code>, the key stays in the file as before. Existing binaries still work unchanged.</p>
+        <span class="mapto">metadata.Key fallback</span></div>
+    </div>
+    <div class="tldr"><b>C2 flow:</b> <code>encrypt --c2-url http://server:8080</code> → key goes to server →
+       file has <code>key_id</code> only → runner calls <code>GET /keys/{id}</code> → decrypts → executes payload.</div>
+  </div>
 
   <div class="nav">
     <a href="polymorphic_walkthrough.html">→ Module 02 · The Polymorphic Generator</a>
@@ -406,7 +429,7 @@
     stub:"<b>RUNNER STUB — ~3 MB.</b> A cross-compiled Go binary (Windows PE, starts with <code>MZ</code>). It is compiled once at encryption time from the embedded <code>runner.src</code>. When executed, it reads itself, finds the trailer at the end, decrypts the payload, and launches it.",
     pad:"<b>ZERO PADDING — variable.</b> Pure zero bytes that inflate the file to the requested <code>--add-size</code>. They sit between the stub and the encrypted data. The runner skips right over them — the trailer tells it exactly where the ciphertext starts.",
     cipher:"<b>CIPHERTEXT + TAG — variable.</b> Your encrypted file plus a 16-byte GCM authentication tag. The tag is the integrity seal: it detects a wrong key or any tampering.",
-    header:"<b>JSON METADATA — ~160 bytes.</b> Contains: <code>key</code> (base64), <code>nonce</code> (base64), <code>delay</code>, <code>original_name</code>, <code>original_size</code>, and <code>ciphertext_len</code>. The runner reads this to know how to decrypt.",
+    header:"<b>JSON METADATA — ~160 bytes.</b> Default mode: <code>key</code> (base64), <code>nonce</code> (base64), <code>delay</code>, name, sizes. C2 mode (<code>--c2-url</code>): <code>key_id</code> and <code>c2_url</code> replace key/nonce — the runner fetches the key from the server at runtime.",
     len:"<b>META LENGTH — 4 bytes.</b> A big-endian <code>uint32</code> that tells the runner how many bytes of JSON metadata precede it. This is read second (after the magic).",
     magic:"<b>MAGIC — 4 bytes.</b> The ASCII tag <code>HBX1</code> at the very end of the file. The runner reads the last 4 bytes first to confirm this is a valid Hidden-Bytes binary. It's also fed into AES-GCM as associated data, so editing it breaks authentication."
   };

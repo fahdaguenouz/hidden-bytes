@@ -155,7 +155,7 @@
         </div>
         <div class="seg mut" id="segMeta">
           <span class="label">📋 metadata</span>
-          <span class="detail">JSON: new key, nonce, stub_size</span>
+          <span class="detail">JSON: key + nonce (default) or key_id + c2_url (C2 mode)</span>
           <span class="bytes">~200 B</span>
         </div>
         <div class="seg fixed" style="border-bottom:none">
@@ -227,6 +227,39 @@
 
   <div class="tldr"><b>Defender's takeaway:</b> if the file keeps changing but the behaviour doesn't, stop trusting
     the fingerprint and start watching the behaviour. That's the whole lesson polymorphism teaches.</div>
+
+  <!-- 5. C2 key server mode -->
+  <h2><span class="idx">05</span> C2 Key Server mode</h2>
+  <p class="sub">With <code>--url</code>, the AES key is stored on a remote server instead of in the file.
+     The polymorphic stub both <b>fetches</b> the current key and <b>pushes</b> the new key after re-encryption.</p>
+  <div class="panel">
+    <div class="feat">
+      <div class="fcard"><div class="ico">📡</div><h3>Generate → POST key</h3>
+        <p>At build time, the tool sends the key to the C2 server and stores only a <code>key_id</code> in the metadata.</p>
+        <span class="mapto">generate.go → sendKeyToServer()</span></div>
+      <div class="fcard"><div class="ico">🔑</div><h3>Run → GET key</h3>
+        <p>At runtime, the stub calls <code>GET /keys/{id}</code> to fetch the decryption key. No server = no decryption.</p>
+        <span class="mapto">stub.src → fetchKey()</span></div>
+      <div class="fcard"><div class="ico">🔄</div><h3>Re-encrypt → POST new key</h3>
+        <p>After re-encrypting with a fresh key, the stub pushes the new key to the server and updates the metadata with the new <code>key_id</code>.</p>
+        <span class="mapto">stub.src → pushKey()</span></div>
+      <div class="fcard"><div class="ico">🔥</div><h3>Burn-after-reading</h3>
+        <p>With <code>keyserver --burn</code>, each key is deleted after one fetch. The binary becomes a one-shot weapon.</p>
+        <span class="mapto">keyserver --burn</span></div>
+    </div>
+    <div class="howbox" style="margin-top:14px">
+      <b>C2 polymorphic cycle:</b><br>
+      <span class="hi">1.</span> Stub reads self → parses trailer → finds <span class="pk">key_id</span> + <span class="pk">c2_url</span><br>
+      <span class="hi">2.</span> <span class="pk">GET /keys/{id}</span> → receives key + nonce from server<br>
+      <span class="hi">3.</span> Decrypt payload with retrieved key<br>
+      <span class="hi">4.</span> Generate <span class="pk">newKey</span> + <span class="pk">newNonce</span> → re-encrypt payload<br>
+      <span class="hi">5.</span> <span class="pk">POST /keys</span> → push new key to server → receive new <span class="pk">key_id</span><br>
+      <span class="hi">6.</span> Rewrite self with new ciphertext, new padding, new key_id in metadata<br>
+      <span class="hi">7.</span> Execute payload
+    </div>
+    <div class="tldr"><b>Key difference:</b> without <code>--url</code> the key lives in the file (self-contained).
+       With <code>--url</code> the key lives on the server — the file is useless without network access to the C2.</div>
+  </div>
 
   <div class="nav"><a href="evasion_walkthrough.html">← Module 01 · The Evasion Packer</a></div>
   <footer>HIDDEN-BYTES // POLYMORPHIC // educational use — isolated VM only</footer>

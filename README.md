@@ -39,6 +39,7 @@ Hidden-Bytes is a command-line toolkit written in Go, built for the HiddenBytes 
 - Execution delay: the runner waits before decrypting, defeating sandbox analysis that times out.
 - A self-extracting runner: one `.exe` that carries the encrypted payload, its key, and the decryption logic.
 - **File-level polymorphism**: the binary re-encrypts with a new key and new random padding on every run, so its SHA-256 changes while its behaviour does not.
+- **Remote key management (C2 key server)**: an optional mode where the encryption key is stored on a remote server instead of in the file — the binary fetches the key at runtime, adding a network-dependent decryption gate.
 - A reverse shell payload for educational demonstration.
 - How defenders can investigate and detect these techniques.
 
@@ -141,7 +142,7 @@ The output is a real Windows PE executable. When run on Windows it:
 1. Reads itself from disk.
 2. Finds the metadata trailer at the end of the file.
 3. Waits for the configured delay.
-4. Decrypts the payload using the key stored in the metadata.
+4. Decrypts the payload using the key from the metadata (or fetches it from the C2 key server if `--c2-url` was used — see [section 6](#6-c2-key-server--remote-key-management)).
 5. Writes the original binary to a temporary directory.
 6. Executes it.
 7. Cleans up.
@@ -292,8 +293,8 @@ The evasion tool produces a single file with this structure:
 │  Encrypted payload bytes + 16-byte auth tag              │
 ├──────────────────────────────────────────────────────────┤
 │  JSON metadata             variable                      │
-│  key (base64), nonce (base64), delay, original_name,     │
-│  original_size, ciphertext_len                           │
+│  key + nonce (base64), OR key_id + c2_url (C2 mode),     │
+│  delay, original_name, original_size, ciphertext_len     │
 ├──────────────────────────────────────────────────────────┤
 │  Metadata length           4 bytes, big-endian uint32    │
 ├──────────────────────────────────────────────────────────┤
@@ -302,7 +303,7 @@ The evasion tool produces a single file with this structure:
 └──────────────────────────────────────────────────────────┘
 ```
 
-The runner reads **backwards from the end**: it finds `HBX1`, reads the metadata length, parses the JSON metadata, then extracts the ciphertext at the known offset. The key and nonce are in the metadata, so the file is completely self-contained.
+The runner reads **backwards from the end**: it finds `HBX1`, reads the metadata length, parses the JSON metadata, then extracts the ciphertext at the known offset. By default the key and nonce are in the metadata, making the file self-contained. With `--c2-url`, only a `key_id` is stored and the runner fetches the key from the server at runtime (see [section 6](#6-c2-key-server--remote-key-management)).
 
 ### 4.5 Where is the key?
 
@@ -347,7 +348,7 @@ print(json.dumps(meta, indent=2))
 2. **Anti-sandbox**: the delay forces the sandbox to time out before decryption begins.
 3. **Self-contained execution**: the runner needs no external configuration or key server — it carries everything it needs.
 
-This is a deliberate design tradeoff, not a vulnerability. If secret-key protection were needed, the key would be fetched from a remote server at runtime — but that adds a network dependency and a different detection surface.
+This is a deliberate design tradeoff, not a vulnerability. For scenarios where the key should **not** be in the file, use the `--c2-url` flag to send the key to a remote server at encryption time — see [section 6](#6-c2-key-server--remote-key-management).
 
 ### 4.6 How the runner enforces the delay
 
@@ -575,13 +576,13 @@ Type a command in the listener terminal and it runs in the remote shell.
 │  Re-encrypted with fresh key each run                    │
 ├──────────────────────────────────────────────────────────┤
 │  JSON metadata             variable [changes every run]  │
-│  New key, nonce, stub_size                               │
+│  New key + nonce, OR new key_id + c2_url (C2 mode)       │
 ├──────────────────────────────────────────────────────────┤
 │  Metadata length + "HBX1"  8 bytes                       │
 └──────────────────────────────────────────────────────────┘
 ```
 
-On each run, **everything below the stub changes**: new random padding (different length), new ciphertext (new key), new metadata (new key/nonce). Only the stub bytes stay the same. The result is a completely different file hash.
+On each run, **everything below the stub changes**: new random padding (different length), new ciphertext (new key), new metadata (new key/nonce, or new key_id in C2 mode). Only the stub bytes stay the same. The result is a completely different file hash.
 
 ### 5.6 Self-modification on Windows
 
@@ -840,7 +841,7 @@ Go's `crypto/aes` and `crypto/cipher` packages provide the implementation. The `
 
 ### Random key generation
 
-Each encryption generates a fresh 32-byte key using `crypto/rand.Read` (the OS CSPRNG). The key is never derived from a passphrase. It is stored in the metadata trailer alongside the ciphertext, so the file is self-contained.
+Each encryption generates a fresh 32-byte key using `crypto/rand.Read` (the OS CSPRNG). The key is never derived from a passphrase. By default it is stored in the metadata trailer alongside the ciphertext, making the file self-contained. With the C2 key server (`--c2-url` / `--url`), the key is sent to the remote server instead, and only a `key_id` reference is stored in the file (see [section 6](#6-c2-key-server--remote-key-management)).
 
 ### Cross-compilation
 
@@ -893,7 +894,7 @@ Recommended controls: application allowlisting, least privilege, egress filterin
 2. **The runner launches the payload as a child process.** There is no process hollowing, injection, or concealment.
 3. **The reverse shell is a lab payload.** One connection, one address, no persistence, no privilege escalation.
 4. **Self-modification needs a writable file.** If the binary is read-only, the hash stops changing (the payload still runs).
-5. **Key is in the metadata.** Anyone who can read the file can recover the payload. Protect the artifact with access controls.
+5. **Key is in the metadata (default mode).** Anyone who can read the file can recover the payload. Use `--c2-url` / `--url` to keep the key on a remote server instead (see [section 6](#6-c2-key-server--remote-key-management)).
 6. **Go toolchain required at build time.** The tools cross-compile the runner/stub at encryption/generation time, so Go must be installed.
 7. **Manual isolation verification.** Code cannot prove the VM is isolated — the auditor must check hypervisor settings.
 8. **Audit results must be measured.** Do not claim a detection percentage without recorded evidence.
