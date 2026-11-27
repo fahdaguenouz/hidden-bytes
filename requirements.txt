@@ -1,4 +1,0 @@
-cryptography>=42,<48
-pyinstaller>=6,<7
-pytest>=8,<10
-pefile>=2023.2.7

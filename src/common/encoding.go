@@ -1,4 +1,4 @@
-package hiddenbytes
+package common
 
 import (
 	"encoding/base64"
@@ -10,7 +10,7 @@ func Base64Encode(value []byte) string {
 	return base64.StdEncoding.EncodeToString(value)
 }
 
-// Base64Decode decodes ASCII Base64 string to bytes, safely validating the input.
+// Base64Decode decodes ASCII Base64 string to bytes, safely validating input.
 func Base64Decode(value string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(value)
 }
