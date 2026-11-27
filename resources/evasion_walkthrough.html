@@ -70,22 +70,24 @@
   /* size bar graph */
   .sizebar-wrap{margin-top:8px;}
   .sizebar{height:30px;border-radius:8px;overflow:hidden;display:flex;border:1px solid var(--line);background:var(--bg2);}
+  .sizebar .stub{background:linear-gradient(var(--violet),#7b5bcc);min-width:3px;transition:flex-grow .4s;}
   .sizebar .orig{background:linear-gradient(var(--green),#2bbf76);min-width:3px;transition:flex-grow .4s;}
   .sizebar .pad{background:repeating-linear-gradient(45deg,#324861,#324861 6px,#283b50 6px,#283b50 12px);transition:flex-grow .4s;}
   .legend{display:flex;gap:16px;font-size:12px;color:var(--soft);margin-top:8px;font-family:var(--mono);}
   .legend i{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:6px;vertical-align:middle;}
 
-  /* clickable HBX1 byte map */
+  /* clickable byte map */
   .bytemap{display:flex;height:56px;border-radius:9px;overflow:hidden;border:1px solid var(--line);margin:6px 0;}
   .bytemap button{border:none;color:#06121a;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;
     min-width:0;overflow:hidden;white-space:nowrap;padding:0 4px;transition:filter .15s,flex-grow .3s;}
   .bytemap button:hover{filter:brightness(1.18);}
   .bytemap button[aria-pressed=true]{outline:2px solid #fff;outline-offset:-2px;}
-  .b-magic{background:var(--cyan);flex:0 0 58px;}
-  .b-len{background:var(--violet);flex:0 0 58px;}
-  .b-header{background:var(--blue);flex:0 0 118px;}
-  .b-cipher{background:var(--amber);flex:1 1 110px;}
-  .b-pad{background:#64788f;flex:2 1 150px;}
+  .b-stub{background:var(--violet);flex:1 1 100px;}
+  .b-pad{background:#64788f;flex:2 1 120px;}
+  .b-cipher{background:var(--amber);flex:1 1 90px;}
+  .b-header{background:var(--blue);flex:0 0 100px;}
+  .b-len{background:var(--green);flex:0 0 48px;}
+  .b-magic{background:var(--cyan);flex:0 0 48px;}
   .explain{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--cyan);
     border-radius:0 10px 10px 0;padding:13px 16px;font-size:14px;color:var(--soft);margin-top:4px;min-height:62px;}
   .explain b{color:var(--ink);}
@@ -126,13 +128,7 @@
   .nav a{flex:1;text-align:center;border:1px solid var(--line);border-radius:10px;padding:11px;color:var(--cyan);
     text-decoration:none;font-size:13px;background:var(--panel);}
   .nav a:hover{background:var(--panel2);}
-  /* container vs runner */
-  .toggle{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
-  .tg{flex:1 1 200px;font-family:var(--sans);font-size:14px;font-weight:600;cursor:pointer;border-radius:10px;
-    padding:12px 14px;border:1px solid var(--line);background:var(--bg2);color:var(--soft);transition:.15s;text-align:left;}
-  .tg span{font-family:var(--mono);font-size:11px;opacity:.8;display:block;margin-top:2px;}
-  .tg:hover{border-color:var(--cyan);}
-  .tg.active{border-color:var(--cyan);color:var(--cyan);background:rgba(47,224,208,.08);}
+  /* layout view */
   .cvr{display:grid;grid-template-columns:1.2fr 1fr;gap:18px;align-items:start;}
   .filebox{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--bg2);}
   .filebox .fhead{font-family:var(--mono);font-size:12px;color:var(--soft);padding:9px 12px;border-bottom:1px solid var(--line);
@@ -140,19 +136,18 @@
   .layer{padding:13px 14px;border-bottom:1px solid var(--line);font-size:13px;}
   .layer:last-child{border-bottom:none;}
   .layer small{color:var(--soft);display:block;margin-top:2px;}
-  .layer.opener{background:rgba(47,224,208,.07);}
+  .layer.opener{background:rgba(155,123,240,.07);}
   .layer.body{background:rgba(75,143,240,.07);}
   .layer.pad{background:rgba(100,120,143,.12);}
+  .layer.trailer{background:rgba(47,224,208,.07);}
   .keybadge{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;font-weight:700;
     background:var(--amber-dim);color:var(--amber);border:1px solid rgba(240,169,59,.3);padding:3px 9px;border-radius:999px;margin-top:8px;}
-  .sep-key{border:1px dashed var(--amber);border-radius:12px;padding:13px 14px;margin-top:12px;background:rgba(240,169,59,.05);
-    font-family:var(--mono);font-size:13px;color:var(--amber);}
   .facts2{display:flex;flex-direction:column;gap:10px;}
   .fact{border:1px solid var(--line);border-radius:10px;padding:11px 14px;background:var(--panel);}
   .fact .q{font-family:var(--mono);font-size:11px;color:var(--soft);text-transform:uppercase;letter-spacing:.06em;}
   .fact .a{font-size:13.5px;margin-top:3px;}
   .fact .a.yes{color:var(--green);} .fact .a.no{color:var(--red);}
-  /* inside-a-runner tree */
+  /* file tree */
   .tree{font-family:var(--mono);font-size:13px;line-height:1.9;white-space:pre;overflow-x:auto;color:var(--soft);}
   .tree .t-file{color:var(--cyan);font-weight:700;}
   .tree .t-mem{color:var(--ink);}
@@ -172,20 +167,21 @@
   <header class="hero">
     <span class="chip"><span class="blink"></span>Hidden-Bytes · Module 01 / Evasion</span>
     <h1>The <span class="accent">Evasion</span> Packer</h1>
-    <p>Lock a file, inflate it, delay it, and wrap it so it extracts itself. Everything below is
-       live — move the sliders, click the byte map, and run the simulated payload.</p>
+    <p>Lock a file with AES-256-GCM, inflate it, delay it, and wrap it into a self-extracting Windows <code>.exe</code>.
+       Built in Go and cross-compiled at encryption time. Everything below is live — move the sliders,
+       click the byte map, and run the simulated payload.</p>
   </header>
 
   <!-- 1. interactive packer -->
   <h2><span class="idx">01</span> Build a package</h2>
-  <p class="sub">Change the inputs and watch the final artifact change. These are the same three knobs
+  <p class="sub">Change the inputs and watch the final artifact change. These are the same knobs
      the real CLI exposes: <code>--add-size</code> and <code>--delay</code> on a chosen input file.</p>
 
   <div class="panel glow">
     <div class="lab">
       <div class="controls">
         <label for="fname">input file</label>
-        <input type="text" id="fname" value="my_program" spellcheck="false">
+        <input type="text" id="fname" value="target.exe" spellcheck="false">
 
         <label for="fsize">original size (KB)</label>
         <div class="row"><input type="range" id="fsize" min="1" max="5000" value="40">
@@ -202,15 +198,23 @@
 
       <div>
         <div class="readout">
-          output artifact → <b id="outName">my_program.pyz</b><br>
+          output artifact → <b id="outName">evaded.exe</b><br>
+          stub size: <b id="roStub">~3 MB</b><br>
           original: <b id="roOrig">40 KB</b><br>
           padding added: <b id="roPad">101 MB</b><br>
-          final size: <span class="big" id="roFinal">101.04 MB</span>
+          final size: <span class="big" id="roFinal">104.04 MB</span>
         </div>
         <div class="sizebar-wrap">
-          <div class="sizebar"><div class="orig" id="barOrig" style="flex-grow:1"></div><div class="pad" id="barPad" style="flex-grow:200"></div></div>
-          <div class="legend"><span><i style="background:var(--green)"></i>real file</span>
-            <span><i style="background:#324861"></i>random padding</span></div>
+          <div class="sizebar">
+            <div class="stub" id="barStub" style="flex-grow:30"></div>
+            <div class="pad" id="barPad" style="flex-grow:200"></div>
+            <div class="orig" id="barOrig" style="flex-grow:1"></div>
+          </div>
+          <div class="legend">
+            <span><i style="background:var(--violet)"></i>runner stub</span>
+            <span><i style="background:#324861"></i>zero padding</span>
+            <span><i style="background:var(--green)"></i>encrypted file + trailer</span>
+          </div>
         </div>
       </div>
     </div>
@@ -231,63 +235,88 @@
     </div>
     <div class="feat" style="margin-top:14px">
       <div class="fcard"><div class="ico">🔑</div><h3>Key — 256 bits</h3>
-        <p>A fresh 32-byte random key per file, from the OS CSPRNG. Never a password. It is embedded in the runner so it can unlock itself.</p>
-        <span class="mapto">AESGCM.generate_key(256)</span></div>
+        <p>A fresh 32-byte random key per file, from Go's <code>crypto/rand</code>. Never a password. The key is stored in the trailer metadata so the runner can unlock itself.</p>
+        <span class="mapto">crypto/rand (32 bytes)</span></div>
       <div class="fcard"><div class="ico">🎲</div><h3>Nonce — 96 bits</h3>
         <p>A one-time random number used once per encryption. Reusing a nonce with the same key would break GCM — so a new one is drawn every time.</p>
-        <span class="mapto">os.urandom(12)</span></div>
+        <span class="mapto">crypto/rand (12 bytes)</span></div>
       <div class="fcard"><div class="ico">🏷️</div><h3>Tag — 128 bits</h3>
         <p>Computed over the ciphertext. On decryption it is re-checked: a wrong key or a single flipped byte makes it mismatch and decryption is refused.</p>
-        <span class="mapto">InvalidTag → error</span></div>
+        <span class="mapto">gcm.Open → error</span></div>
       <div class="fcard"><div class="ico">🧷</div><h3>AAD — the magic</h3>
         <p>The <code>HBX1</code> magic is fed in as <b>associated data</b>: authenticated but not encrypted. Edit the magic and the tag check fails.</p>
-        <span class="mapto">encrypt(nonce, data, b"HBX1")</span></div>
+        <span class="mapto">gcm.Seal(nil, nonce, data, []byte("HBX1"))</span></div>
     </div>
-    <div class="tldr"><b>In one line:</b> ciphertext = <code>AES-256-GCM(key, nonce, file, aad=HBX1)</code>,
+    <div class="tldr"><b>In one line:</b> ciphertext = <code>AES-256-GCM(key, nonce, file, aad="HBX1")</code>,
       and recovery needs the key, the nonce and an intact tag — otherwise it fails loudly instead of returning wrong data.</div>
   </div>
 
   <!-- 3. clickable byte map -->
-  <h2><span class="idx">03</span> Anatomy of the HBX1 body</h2>
-  <p class="sub">Click any segment to see what it is. The key is <b>not</b> in here — it rides inside
-     the opener program instead.</p>
+  <h2><span class="idx">03</span> Anatomy of the output binary</h2>
+  <p class="sub">The output is a real Windows PE (<code>MZ</code> header) with encrypted data and a metadata
+     trailer appended after the stub. Click any segment to see what it is. The runner reads
+     <b>backward</b> from the end to find everything.</p>
   <div class="panel">
     <div class="bytemap" id="bytemap">
-      <button class="b-magic" data-k="magic" aria-pressed="true">HBX1</button>
-      <button class="b-len" data-k="len">LEN</button>
-      <button class="b-header" data-k="header">JSON HEADER</button>
+      <button class="b-stub" data-k="stub" aria-pressed="true">STUB .EXE</button>
+      <button class="b-pad" data-k="pad">ZERO PADDING</button>
       <button class="b-cipher" data-k="cipher">CIPHERTEXT+TAG</button>
-      <button class="b-pad" data-k="pad">PADDING</button>
+      <button class="b-header" data-k="header">JSON META</button>
+      <button class="b-len" data-k="len">LEN</button>
+      <button class="b-magic" data-k="magic">HBX1</button>
     </div>
     <div class="explain" id="explain"></div>
   </div>
 
-  <!-- 4. container vs runner -->
-  <h2><span class="idx">04</span> Container vs runner — where it lives</h2>
-  <p class="sub">The runner is the shippable artifact; the container is the encrypted body that lives
-     inside it. The key is always embedded in the runner's launcher. Flip between the two layers:</p>
+  <!-- 4. file layout -->
+  <h2><span class="idx">04</span> Inside the runner — where everything lives</h2>
+  <p class="sub">The runner is a single self-contained <code>.exe</code>. There are no zip members, no separate files.
+     The encrypted payload and all metadata are appended directly after the compiled Go stub.</p>
   <div class="panel">
-    <div class="toggle">
-      <button class="tg" data-v="runner">🎁 Self-extracting runner <span>.pyz / .exe</span></button>
-      <button class="tg" data-v="container">📦 The container <span>HBX1 body inside</span></button>
+    <div class="cvr">
+      <div class="filebox">
+        <div class="fhead"><span>ONE file · evaded.exe</span><span>runs itself ▶</span></div>
+        <div class="layer opener"><b>⚙️ Runner stub (Go, cross-compiled)</b>
+          <small>a Windows PE binary that reads itself, finds the trailer, decrypts, and launches the payload</small></div>
+        <div class="layer pad"><b>🧱 Zero padding</b>
+          <small>inflates the file to the requested <code>--add-size</code></small></div>
+        <div class="layer body"><b>🔒 AES-256-GCM ciphertext + tag</b>
+          <small>the encrypted original file — opaque to scanners</small></div>
+        <div class="layer trailer"><b>📋 JSON metadata trailer</b>
+          <small>key, nonce, delay, original name/size, ciphertext length</small>
+          <span class="keybadge">🔑 AES key stored HERE (base64)</span></div>
+        <div class="layer" style="background:rgba(47,224,208,.12)"><b>📐 metaLen (4 B) + "HBX1" (4 B)</b>
+          <small>the footer the runner reads first — backward from the end of the file</small></div>
+      </div>
+      <div class="facts2">
+        <div class="fact"><div class="q">where is the key?</div><div class="a">in the JSON metadata trailer, base64-encoded</div></div>
+        <div class="fact"><div class="q">can it run itself?</div><div class="a yes">yes — waits for the delay, decrypts, launches</div></div>
+        <div class="fact"><div class="q">is it a real .exe?</div><div class="a yes">yes — starts with MZ, valid Windows PE</div></div>
+        <div class="fact"><div class="q">how does the stub find the payload?</div><div class="a">reads backward from the end: magic → metaLen → JSON → ciphertext</div></div>
+        <div class="fact"><div class="q">who makes it?</div><div class="a"><code>./evasion --encrypt</code> compiles the stub at encryption time</div></div>
+      </div>
     </div>
-    <div class="cvr" id="cvr"></div>
   </div>
 
-  <p class="sub" style="margin-top:22px">And here is a <b>real</b> runner, unzipped — so you can see exactly
-     where the container (<code>payload.hbx</code>) hides. <b>With the CLI there is no separate <code>.hbx</code> file:</b>
-     it lives inside the runner.</p>
+  <p class="sub" style="margin-top:22px">The runner reads the file <b>from the end</b>. No zip extraction,
+     no archive parsing — just byte offsets computed from the trailer.</p>
   <div class="panel">
     <div class="tree">
-<span class="t-file">demo.pyz</span>  <span class="t-note">← THE RUNNER (the one file the CLI made — 20,984 b on disk)</span>
-│   <span class="t-note">it is a zip, so inside it are three members:</span>
-├── <span class="t-mem">__main__.py</span>  <span class="t-size">11,312 b</span>  <span class="t-note">← launcher: run-time code + embedded key + AES</span>
-├── <span class="t-hbx">payload.hbx</span>  <span class="t-size">   178 b</span>  <span class="t-note">← THE CONTAINER: the HBX1 encrypted blob</span>
-└── <span class="t-pad">padding.bin</span>  <span class="t-size">16,561 b</span>  <span class="t-note">← random filler for the exact size</span>
+<span class="t-file">evaded.exe</span>  <span class="t-note">← THE RUNNER (the one file the CLI made — e.g. 105 MB on disk)</span>
+│
+│  <span class="t-note">the runner reads itself backward:</span>
+│
+├─ <span class="t-mem">bytes 0 … stub_end</span>       <span class="t-note">← compiled Go stub (.exe, starts with MZ)</span>
+├─ <span class="t-pad">zero padding</span>              <span class="t-size">101 MB</span>   <span class="t-note">← inflates the file to bypass size-based scanners</span>
+├─ <span class="t-hbx">ciphertext + GCM tag</span>      <span class="t-size">var</span>      <span class="t-note">← AES-256-GCM encrypted payload</span>
+├─ <span class="t-mem">JSON metadata</span>             <span class="t-size">~160 B</span>  <span class="t-note">← key, nonce, delay, name, sizes</span>
+├─ <span class="t-pad">metaLen</span>                   <span class="t-size">4 B</span>     <span class="t-note">← big-endian u32: length of JSON above</span>
+└─ <span class="t-file">HBX1</span>                      <span class="t-size">4 B</span>     <span class="t-note">← magic bytes — the runner finds these FIRST</span>
     </div>
     <div class="treekey">
-      <span><i style="background:var(--cyan)"></i><b>runner</b> = the box you ship (<code>demo.pyz</code>)</span>
-      <span><i style="background:var(--blue)"></i><b>container</b> = the locked parcel inside (<code>payload.hbx</code>, starts with <code>HBX1</code>)</span>
+      <span><i style="background:var(--violet)"></i><b>stub</b> = compiled Go runner (Windows PE)</span>
+      <span><i style="background:var(--cyan)"></i><b>trailer</b> = metadata + magic (read backward)</span>
+      <span><i style="background:var(--amber)"></i><b>ciphertext</b> = encrypted payload</span>
     </div>
   </div>
 
@@ -298,31 +327,30 @@
   <div class="panel">
     <div class="term">
       <div class="bar"><i class="dot-r"></i><i class="dot-y"></i><i class="dot-g"></i>
-        <span id="termTitle">./my_program.pyz</span></div>
-      <div class="screen" id="screen"><span class="muted">press “Run package” to execute…</span></div>
+        <span id="termTitle">./evaded.exe</span></div>
+      <div class="screen" id="screen"><span class="muted">press "Run package" to execute…</span></div>
     </div>
     <div class="btnrow">
       <button class="btn" id="runBtn">▶ Run package</button>
-      <button class="btn" id="decBtn">↩ Decrypt only (no run)</button>
     </div>
   </div>
 
   <!-- 6. four features -->
   <h2><span class="idx">06</span> The four stealth moves</h2>
-  <p class="sub">Each maps to a concrete part of the code.</p>
+  <p class="sub">Each maps to a concrete part of the Go source code.</p>
   <div class="feat">
     <div class="fcard"><div class="ico">🔒</div><h3>Encrypt</h3>
       <p>AES-256-GCM scrambles the file with a fresh random key. Wrong key = fails, loudly.</p>
-      <span class="mapto">crypto.build_payload()</span></div>
+      <span class="mapto">encryptAndBuild() · encrypt.go</span></div>
     <div class="fcard"><div class="ico">📦</div><h3>Inflate</h3>
-      <p>Random padding grows the file to an exact size. Big, bland files resist inspection.</p>
-      <span class="mapto">runner._build_archive() · padding</span></div>
+      <p>Zero padding grows the file to an exact size. Big, bland files resist inspection.</p>
+      <span class="mapto">writePadding() · encrypt.go</span></div>
     <div class="fcard"><div class="ico">⏱️</div><h3>Delay</h3>
       <p>A pre-execution wait. Many sandboxes time out before it ends and see nothing.</p>
-      <span class="mapto">header.delay_seconds · time.sleep</span></div>
+      <span class="mapto">metadata.Delay · time.Sleep · runner.src</span></div>
     <div class="fcard"><div class="ico">🎁</div><h3>Self-extract</h3>
-      <p>The key rides inside the opener, so the artifact unlocks and launches itself.</p>
-      <span class="mapto">runner.RUNNER_TEMPLATE</span></div>
+      <p>The key rides in the trailer, so the artifact unlocks and launches itself. The Go stub is compiled at encryption time.</p>
+      <span class="mapto">runner.src (embedded, cross-compiled)</span></div>
   </div>
 
   <div class="tldr"><b>Defender's takeaway:</b> size and timing alone can blind signature and sandbox
@@ -338,6 +366,7 @@
 <script>
 (function(){
   const MIB = 1048576, KIB = 1024;
+  const STUB_SIZE = 3 * MIB; // approximate Go stub size
   const $ = id => document.getElementById(id);
   const fname=$("fname"), fsize=$("fsize"), addsize=$("addsize"), delay=$("delay");
 
@@ -347,37 +376,39 @@
     return bytes+" B";
   }
   function outName(){
-    let n = (fname.value.trim()||"program");
-    if(/\.(exe)$/i.test(n)) return n;       // keep .exe
-    return n.replace(/\.[^.]*$/,"") + ".pyz";
+    let n = (fname.value.trim()||"target");
+    // Always produce .exe
+    return n.replace(/\.[^.]*$/,"") + ".exe";
   }
   function refresh(){
     const origB = (+fsize.value)*KIB;
     const padB  = (+addsize.value)*MIB;
-    const finalB= origB + padB;
+    const finalB= STUB_SIZE + padB + origB + 16 + 200 + 8; // stub + pad + ciphertext(≈orig+16tag) + meta + footer
     $("fsizeV").textContent  = (+fsize.value)+" KB";
     $("addsizeV").textContent= (+addsize.value)+" MB";
     $("delayV").textContent  = (+delay.value)+" s";
     $("outName").textContent = outName();
     $("termTitle").textContent = "./"+outName();
+    $("roStub").textContent  = human(STUB_SIZE);
     $("roOrig").textContent  = human(origB);
     $("roPad").textContent   = human(padB);
     $("roFinal").textContent = human(finalB);
-    // size bar (log-ish so the tiny real file is still visible)
-    const o = Math.max(origB,1), p = Math.max(padB,0);
-    $("barOrig").style.flexGrow = Math.max(Math.log10(o+10),1);
-    $("barPad").style.flexGrow  = p===0 ? 0 : Math.max(Math.log10(p+10)*3,1);
+    // size bar
+    $("barStub").style.flexGrow = Math.max(Math.log10(STUB_SIZE+10)*2,1);
+    $("barOrig").style.flexGrow = Math.max(Math.log10(origB+10),1);
+    $("barPad").style.flexGrow  = padB===0 ? 0 : Math.max(Math.log10(padB+10)*3,1);
   }
   [fname,fsize,addsize,delay].forEach(el=>el.addEventListener("input",refresh));
   refresh();
 
   // ---- byte map ----
   const EX = {
-    magic:"<b>MAGIC — 4 bytes.</b> The ASCII tag <code>HBX1</code>. It's also fed into AES-GCM as extra authenticated data, so if an attacker edits it, decryption fails. It fingerprints the format.",
-    len:"<b>Header length — 4 bytes.</b> A fixed-size number whose <i>value</i> changes per file: it says how many bytes the JSON header is, so the reader knows where the header ends and the ciphertext begins.",
-    header:"<b>JSON header — variable.</b> Plain-text metadata: algorithm, delay, original name & size, ciphertext length, and the nonce (a one-time random number). None of it is secret.",
-    cipher:"<b>Ciphertext + tag — variable.</b> Your encrypted file plus a 16-byte authentication tag. The tag is the integrity seal: it detects a wrong key or any tampering.",
-    pad:"<b>Padding — variable.</b> Pure random filler appended to hit the exact requested size. It's ignored when reading — the header already said where the real data ends."
+    stub:"<b>RUNNER STUB — ~3 MB.</b> A cross-compiled Go binary (Windows PE, starts with <code>MZ</code>). It is compiled once at encryption time from the embedded <code>runner.src</code>. When executed, it reads itself, finds the trailer at the end, decrypts the payload, and launches it.",
+    pad:"<b>ZERO PADDING — variable.</b> Pure zero bytes that inflate the file to the requested <code>--add-size</code>. They sit between the stub and the encrypted data. The runner skips right over them — the trailer tells it exactly where the ciphertext starts.",
+    cipher:"<b>CIPHERTEXT + TAG — variable.</b> Your encrypted file plus a 16-byte GCM authentication tag. The tag is the integrity seal: it detects a wrong key or any tampering.",
+    header:"<b>JSON METADATA — ~160 bytes.</b> Contains: <code>key</code> (base64), <code>nonce</code> (base64), <code>delay</code>, <code>original_name</code>, <code>original_size</code>, and <code>ciphertext_len</code>. The runner reads this to know how to decrypt.",
+    len:"<b>META LENGTH — 4 bytes.</b> A big-endian <code>uint32</code> that tells the runner how many bytes of JSON metadata precede it. This is read second (after the magic).",
+    magic:"<b>MAGIC — 4 bytes.</b> The ASCII tag <code>HBX1</code> at the very end of the file. The runner reads the last 4 bytes first to confirm this is a valid Hidden-Bytes binary. It's also fed into AES-GCM as associated data, so editing it breaks authentication."
   };
   const bm = $("bytemap"), explain=$("explain");
   function pick(k){
@@ -385,16 +416,15 @@
     explain.innerHTML = EX[k];
   }
   bm.addEventListener("click", e=>{ const b=e.target.closest("button"); if(b) pick(b.dataset.k); });
-  pick("magic");
+  pick("stub");
 
   // ---- run simulator ----
-  const screen=$("screen"), runBtn=$("runBtn"), decBtn=$("decBtn");
+  const screen=$("screen"), runBtn=$("runBtn");
   let busy=false;
   function line(html){ screen.innerHTML += html+"\n"; }
   const wait = ms => new Promise(r=>setTimeout(r,ms));
 
   async function countdown(secs){
-    // compress real delay into ~2.2s of animation, but show real numbers
     const shown = Math.min(secs, 101);
     const frames = 22; const per = 2200/frames;
     for(let i=0;i<frames;i++){
@@ -405,81 +435,28 @@
     }
   }
 
-  async function run(execute){
-    if(busy) return; busy=true; runBtn.disabled=true; decBtn.disabled=true;
+  async function run(){
+    if(busy) return; busy=true; runBtn.disabled=true;
     screen.innerHTML="";
     const nm = outName(), d=+delay.value;
-    line(`<span class="muted">$ ${execute?"./"+nm:"./evasion --decrypt "+nm+" --output recovered --no-delay"}</span>`);
+    line(`<span class="muted">$ ./${nm}</span>`);
     await wait(350);
     line('<span class="i">[INFO]</span> Hidden-Bytes self-extracting runner.');
     await wait(400);
-    if(execute && d>0){
+    if(d>0){
       line(`<span class="i">[INFO]</span> Execution delayed by ${d} seconds... <span class="cd"></span>`);
       await countdown(d);
       screen.innerHTML = screen.innerHTML.replace(/<span class="cd">.*?<\/span>/,'<span class="ok">done</span>');
-    } else if(!execute){
-      line('<span class="muted">[INFO] --no-delay: skipping the timer</span>');
     }
     await wait(350);
-    line('<span class="i">[INFO]</span> Decrypting payload (AES-256-GCM)…');
-    await wait(500);
-    line('<span class="ok">[ OK ]</span> Authentication tag verified — key correct, data intact.');
+    line('<span class="ok">[INFO]</span> Binary decrypted successfully.');
     await wait(350);
-    if(execute){
-      line('<span class="i">[INFO]</span> Target program executed.');
-      await wait(300);
-      line('<span class="muted">Hello, World!</span>');
-      await wait(200);
-      line('<span class="muted">[INFO] temp directory cleaned up.</span>');
-    } else {
-      line('<span class="ok">[ OK ]</span> Recovered to ./recovered — written to disk, <b>NOT executed.</b>');
-    }
-    busy=false; runBtn.disabled=false; decBtn.disabled=false;
+    line('<span class="i">[INFO]</span> Target program executed.');
+    await wait(300);
+    line('<span class="muted">Hello, World!</span>');
+    busy=false; runBtn.disabled=false;
   }
-  runBtn.addEventListener("click",()=>run(true));
-  decBtn.addEventListener("click",()=>run(false));
-
-  // ---- container vs runner ----
-  const cvr=$("cvr");
-  const VIEWS={
-    runner:`
-      <div class="filebox">
-        <div class="fhead"><span>ONE file · packed.pyz</span><span>runs itself ▶</span></div>
-        <div class="layer opener"><b>🚪 Launcher (the opener)</b>
-          <small>a small program that unlocks and launches the payload</small>
-          <span class="keybadge">🔑 secret key embedded HERE</span></div>
-        <div class="layer body"><b>🔒 HBX1 body</b><small>magic · header · ciphertext + tag</small></div>
-        <div class="layer pad"><b>🧱 padding</b><small>random filler to the exact size</small></div>
-      </div>
-      <div class="facts2">
-        <div class="fact"><div class="q">where is the key?</div><div class="a">inside the launcher</div></div>
-        <div class="fact"><div class="q">can it run itself?</div><div class="a yes">yes — waits, decrypts, launches</div></div>
-        <div class="fact"><div class="q">who makes it?</div><div class="a">the CLI <code>--encrypt</code></div></div>
-        <div class="fact"><div class="q">read with</div><div class="a">parse_container()</div></div>
-      </div>`,
-    container:`
-      <div>
-        <div class="filebox">
-          <div class="fhead"><span>the HBX1 body · payload.hbx (inside the runner)</span><span>inert ✋</span></div>
-          <div class="layer body"><b>🔒 HBX1 body</b><small>magic · header · ciphertext + tag</small></div>
-          <div class="layer pad"><b>🧱 padding</b><small>random filler to the exact size</small></div>
-        </div>
-        <div class="sep-key">🔑 no key stored here
-          <small style="display:block;margin-top:3px;color:var(--soft);font-family:var(--sans)">the body carries no key — it is embedded in the runner's launcher</small></div>
-      </div>
-      <div class="facts2">
-        <div class="fact"><div class="q">where is the key?</div><div class="a">in the runner's launcher, not in the body</div></div>
-        <div class="fact"><div class="q">can it run itself?</div><div class="a no">no — just data, wrapped by a runner</div></div>
-        <div class="fact"><div class="q">who makes it?</div><div class="a">build_payload(), always embedded in a runner</div></div>
-        <div class="fact"><div class="q">read with</div><div class="a">parse_container()</div></div>
-      </div>`
-  };
-  function showCVR(v){
-    cvr.innerHTML=VIEWS[v];
-    document.querySelectorAll(".tg").forEach(b=>b.classList.toggle("active", b.dataset.v===v));
-  }
-  document.querySelectorAll(".tg").forEach(b=>b.addEventListener("click",()=>showCVR(b.dataset.v)));
-  showCVR("runner");
+  runBtn.addEventListener("click",run);
 })();
 </script>
 </body>

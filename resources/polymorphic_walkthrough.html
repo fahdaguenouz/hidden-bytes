@@ -42,19 +42,23 @@
   .panel.glow{box-shadow:0 0 0 1px rgba(179,139,255,.08),0 18px 40px -24px rgba(179,139,255,.4);}
   code{font-family:var(--mono);font-size:.86em;background:var(--panel2);padding:2px 6px;border-radius:5px;color:#d9c6ff;}
 
-  /* ---- shape-shift runner ---- */
-  .fileview{background:#06040c;border:1px solid var(--line);border-radius:12px;font-family:var(--mono);
+  /* ---- binary layout view ---- */
+  .binview{background:#06040c;border:1px solid var(--line);border-radius:12px;font-family:var(--mono);
     font-size:13px;overflow:hidden;}
-  .fileview .bar{background:var(--panel2);padding:9px 14px;border-bottom:1px solid var(--line);display:flex;
+  .binview .bar{background:var(--panel2);padding:9px 14px;border-bottom:1px solid var(--line);display:flex;
     justify-content:space-between;align-items:center;}
-  .fileview .bar .name{color:var(--soft);}
-  .fileview .bar .gen{color:var(--violet);}
-  .fileview .body{padding:14px 16px;line-height:1.9;color:#c9b6ea;}
-  .fileview .body .cm{color:var(--dim);}
-  .fileview .body .tok{background:var(--violet-dim);color:var(--violet);padding:1px 6px;border-radius:5px;
-    transition:background .2s;}
-  .fileview .body .tok.flash{background:var(--pink);color:#1a0a16;}
-  .fileview .body .same{color:var(--green);}
+  .binview .bar .name{color:var(--soft);}
+  .binview .bar .gen{color:var(--violet);}
+  .binview .body{padding:0;}
+  .seg{display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--line);
+    font-size:13px;transition:background .25s;}
+  .seg:last-child{border-bottom:none;}
+  .seg .label{min-width:110px;font-weight:700;}
+  .seg .detail{color:var(--soft);flex:1;}
+  .seg .bytes{font-variant-numeric:tabular-nums;min-width:80px;text-align:right;}
+  .seg.fixed{color:var(--dim);}
+  .seg.mut{color:var(--pink);}
+  .seg.mut.flash{background:rgba(255,111,208,.12);}
 
   .hashrow{display:flex;align-items:center;gap:12px;margin-top:14px;flex-wrap:wrap;}
   .hashrow .lbl{font-family:var(--mono);font-size:12px;color:var(--soft);min-width:90px;}
@@ -101,6 +105,14 @@
   .nav a{flex:1;text-align:center;border:1px solid var(--line);border-radius:10px;padding:11px;color:var(--violet);
     text-decoration:none;font-size:13px;background:var(--panel);}
   .nav a:hover{background:var(--panel2);}
+
+  /* how it works diagram */
+  .howbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;
+    font-family:var(--mono);font-size:13px;color:var(--soft);line-height:2;}
+  .howbox b{color:var(--ink);}
+  .howbox .hi{color:var(--violet);}
+  .howbox .pk{color:var(--pink);}
+
   @media(max-width:640px){.scan,.feat{grid-template-columns:1fr;}}
 </style>
 </head>
@@ -110,34 +122,57 @@
   <header class="hero">
     <span class="chip"><span class="blink"></span>Hidden-Bytes · Module 02 / Polymorphic</span>
     <h1>The <span class="accent">Polymorphic</span> Generator</h1>
-    <p>A program that repaints itself on every run — new bytes, new fingerprint, identical behaviour.
-       Hit “Run” below and watch the file mutate in real time.</p>
+    <p>A compiled Go binary that re-encrypts its own payload on every run — new key, new padding, new
+       ciphertext, completely different file hash, identical behaviour.
+       Hit "Run" below and watch the binary mutate in real time.</p>
   </header>
 
-  <!-- 1. shape-shift runner -->
+  <!-- 1. binary layout mutation -->
   <h2><span class="idx">01</span> Watch it mutate</h2>
-  <p class="sub">Each run swaps one tiny value — the <code>MUTATION_TOKEN</code> — for a new random one and
-     re-saves the file. That alone changes the whole file's fingerprint. Everything else stays put.</p>
+  <p class="sub">Each run re-encrypts the payload with a <b>fresh random AES-256 key</b>, generates
+     <b>new random padding</b> (1–64 KB), and rewrites the entire binary on disk. The stub stays the same;
+     everything after it changes completely.</p>
 
   <div class="panel glow">
-    <div class="fileview">
-      <div class="bar"><span class="name" id="fvName">shape_shifter.py</span>
+    <div class="binview">
+      <div class="bar"><span class="name" id="fvName">polymorphic.exe</span>
         <span class="gen" id="fvGen">generation 0</span></div>
       <div class="body">
-<span class="cm"># generated polymorphic program</span>
-PAYLOAD      = <span class="same">&lt;encrypted · never changes&gt;</span>
-MUTATION_TOKEN = "<span class="tok" id="tok">a1b2c3d4e5f60718</span>"
-<span class="cm"># on run: rewrite MUTATION_TOKEN → re-save → run payload</span>
+        <div class="seg fixed">
+          <span class="label">🔧 stub.exe</span>
+          <span class="detail">compiled Go runner — fixed</span>
+          <span class="bytes">~3.1 MB</span>
+        </div>
+        <div class="seg mut" id="segPad">
+          <span class="label">🧱 padding</span>
+          <span class="detail">random bytes — <span id="padDesc">12,288 bytes</span></span>
+          <span class="bytes" id="padSize">12 KB</span>
+        </div>
+        <div class="seg mut" id="segCt">
+          <span class="label">🔒 ciphertext</span>
+          <span class="detail">AES-256-GCM — key <code id="keySnip">a1b2c3…</code></span>
+          <span class="bytes">var</span>
+        </div>
+        <div class="seg mut" id="segMeta">
+          <span class="label">📋 metadata</span>
+          <span class="detail">JSON: new key, nonce, stub_size</span>
+          <span class="bytes">~200 B</span>
+        </div>
+        <div class="seg fixed" style="border-bottom:none">
+          <span class="label">🏷️ trailer</span>
+          <span class="detail"><code>metaLen</code> (4 B) + <code>HBX1</code> (4 B)</span>
+          <span class="bytes">8 B</span>
+        </div>
       </div>
     </div>
 
     <div class="hashrow"><span class="lbl">SHA-256</span>
       <span class="fp" id="fp">7c533fca02c5d1ab9e04…</span></div>
     <div class="hashrow"><span class="lbl">behaviour</span>
-      <span class="behav" id="behav">prints the same message ✓</span></div>
+      <span class="behav" id="behav">executes the same payload ✓</span></div>
 
     <div class="btnrow">
-      <button class="btn" id="runBtn">▶ Run program</button>
+      <button class="btn" id="runBtn">▶ Run binary</button>
       <button class="btn ghost" id="resetBtn">↺ Reset</button>
     </div>
 
@@ -146,8 +181,8 @@ MUTATION_TOKEN = "<span class="tok" id="tok">a1b2c3d4e5f60718</span>"
 
   <!-- 2. why -->
   <h2><span class="idx">02</span> Why change the fingerprint?</h2>
-  <p class="sub">A classic scanner recognises known-bad files by a hash. Change one byte and that hash is useless.
-     Click “Run” above a few times, then compare the two defenders below.</p>
+  <p class="sub">A classic scanner recognises known-bad files by a hash. Change the encrypted region and that hash
+     is useless. Click "Run" above a few times, then compare the two defenders below.</p>
   <div class="scan">
     <div class="scard"><h3>🔎 Fingerprint-only scanner</h3>
       <p>Compares the file's hash against a blocklist. If the hash is new, it has never seen it.</p>
@@ -161,27 +196,33 @@ MUTATION_TOKEN = "<span class="tok" id="tok">a1b2c3d4e5f60718</span>"
   <h2><span class="idx">03</span> What happens each run</h2>
   <div class="feat">
     <div class="fcard"><div class="ico">🎒</div><h3>Carry payload</h3>
-      <p>An encrypted payload plus a random token live inside the generated source.</p>
-      <span class="mapto">polymorphic._build_source()</span></div>
-    <div class="fcard"><div class="ico">🖊️</div><h3>Rewrite self</h3>
-      <p>It opens its own file, replaces the old token with a new one, saves.</p>
-      <span class="mapto">_update_signature()</span></div>
+      <p>An AES-256-GCM encrypted payload is appended to the compiled stub, along with JSON metadata and a trailer.</p>
+      <span class="mapto">generate.go → generateBinary()</span></div>
+    <div class="fcard"><div class="ico">🔄</div><h3>Re-encrypt &amp; rewrite</h3>
+      <p>Generate a fresh random key and nonce, re-encrypt the payload, add new random padding, overwrite self on disk.</p>
+      <span class="mapto">stub.src → rand.Read(newKey) · gcm.Seal()</span></div>
     <div class="fcard"><div class="ico">🔀</div><h3>New hash</h3>
-      <p>Different bytes → different SHA-256. The logic is untouched.</p>
-      <span class="mapto">hashlib.sha256(file)</span></div>
+      <p>Different key + different padding + different ciphertext = completely different SHA-256. The logic is untouched.</p>
+      <span class="mapto">sha256sum polymorphic.exe</span></div>
     <div class="fcard"><div class="ico">✅</div><h3>Verify + run</h3>
-      <p>Integrity-checks the payload, then executes it (in the isolated lab).</p>
-      <span class="mapto">_recover_payload() · exec()</span></div>
+      <p>AES-GCM tag authenticates the payload before execution. Python payloads run via <code>python</code>; binaries run directly.</p>
+      <span class="mapto">stub.src → gcm.Open() · exec.Command()</span></div>
   </div>
 
-  <!-- 4. script vs exe -->
-  <h2><span class="idx">04</span> Script vs <code>.exe</code></h2>
-  <p class="sub">A plain <code>.py</code> script edits its own file directly on every run — that is where the
-     self-modification is shown. A packaged <code>.exe</code> is locked while running and cannot rewrite
-     itself in place, so it is the native packaging of the same program: it runs the payload.</p>
-  <div class="panel" style="display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--soft)">
-    <span><span style="color:var(--violet)">poly.py</span> → rewrites itself each run → new hash, same behaviour</span>
-    <span><span style="color:var(--violet)">poly.exe</span> → runs the reverse-shell payload</span>
+  <!-- 4. binary-level polymorphism -->
+  <h2><span class="idx">04</span> Binary-level polymorphism</h2>
+  <p class="sub">The output is always a compiled Windows <code>.exe</code> that can rewrite itself on every run.
+     On Windows, a running <code>.exe</code> cannot be overwritten in place — but it <b>can</b> be renamed.
+     The stub renames itself to <code>.old</code>, writes the new version at the original path, and continues.</p>
+  <div class="howbox">
+    <b>On each execution:</b><br>
+    <span class="hi">1.</span> Read self → parse trailer backward → decrypt payload<br>
+    <span class="hi">2.</span> <span class="pk">newKey</span> = crypto/rand (32 bytes), <span class="pk">newNonce</span> = crypto/rand (12 bytes)<br>
+    <span class="hi">3.</span> <span class="pk">newCiphertext</span> = AES-256-GCM.Seal(payload, newKey, newNonce)<br>
+    <span class="hi">4.</span> <span class="pk">newPadding</span> = random 1–64 KB<br>
+    <span class="hi">5.</span> os.Rename(self, self+".old") → write new binary at original path<br>
+    <span class="hi">6.</span> <span style="color:var(--green)">[INFO] Polymorphic signature updated successfully.</span><br>
+    <span class="hi">7.</span> Write payload to temp → execute → clean up
   </div>
 
   <div class="tldr"><b>Defender's takeaway:</b> if the file keeps changing but the behaviour doesn't, stop trusting
@@ -194,37 +235,61 @@ MUTATION_TOKEN = "<span class="tok" id="tok">a1b2c3d4e5f60718</span>"
 <script>
 (function(){
   const $ = id => document.getElementById(id);
-  const tok=$("tok"), fp=$("fp"), gen=$("fvGen"), log=$("log"),
-        runBtn=$("runBtn"), resetBtn=$("resetBtn"), vMiss=$("vMiss");
-  let generation=0, seenHashes=new Set();
+  const fp=$("fp"), gen=$("fvGen"), log=$("log"),
+        runBtn=$("runBtn"), resetBtn=$("resetBtn"), vMiss=$("vMiss"),
+        segPad=$("segPad"), segCt=$("segCt"), segMeta=$("segMeta"),
+        padDesc=$("padDesc"), padSize=$("padSize"), keySnip=$("keySnip");
+  let generation=0;
 
   const hex = n => Array.from({length:n},()=>"0123456789abcdef"[Math.floor(Math.random()*16)]).join("");
+  const randBetween = (lo,hi) => Math.floor(Math.random()*(hi-lo+1))+lo;
+
   function logline(html){
     if(log.querySelector(".empty")) log.innerHTML="";
     const d=document.createElement("div"); d.innerHTML=html; log.prepend(d);
   }
 
+  function flash(el){
+    el.classList.add("flash");
+    setTimeout(()=>el.classList.remove("flash"),350);
+  }
+
   function run(){
     generation++;
-    const newTok = hex(16);
+    const newKey = hex(6);
     const newHash = hex(16)+"…";
-    // animate the token swap
-    tok.textContent=newTok; tok.classList.add("flash");
-    setTimeout(()=>tok.classList.remove("flash"),260);
+    const newPadKB = randBetween(1,64);
+    const newPadBytes = newPadKB * 1024;
+
+    // animate the mutation
+    flash(segPad); flash(segCt); flash(segMeta);
+    keySnip.textContent = newKey+"…";
+    padDesc.textContent = newPadBytes.toLocaleString()+" bytes";
+    padSize.textContent = newPadKB+" KB";
     fp.textContent = newHash;
     gen.textContent = "generation "+generation;
-    const isNew = !seenHashes.has(newHash); seenHashes.add(newHash);
+
     vMiss.textContent = "verdict: hash #"+generation+" unknown → allowed ✗ missed";
-    logline(`<span class="run">run #${generation}</span> → token <span class="h">${newTok.slice(0,8)}…</span> → SHA-256 <span class="h">${newHash}</span> &nbsp;<span class="ok">behaviour identical ✓</span>`);
+    logline(
+      `<span class="run">run #${generation}</span>`+
+      ` → key <span class="h">${newKey}…</span>`+
+      ` pad <span class="h">${newPadKB}KB</span>`+
+      ` → SHA-256 <span class="h">${newHash}</span>`+
+      ` &nbsp;<span class="ok">behaviour identical ✓</span>`
+    );
   }
+
   function reset(){
-    generation=0; seenHashes.clear();
-    tok.textContent="a1b2c3d4e5f60718";
+    generation=0;
+    keySnip.textContent="a1b2c3…";
+    padDesc.textContent="12,288 bytes";
+    padSize.textContent="12 KB";
     fp.textContent="7c533fca02c5d1ab9e04…";
     gen.textContent="generation 0";
     vMiss.textContent="verdict: unknown file → allowed ✗ missed";
     log.innerHTML='<div class="empty">run history will appear here…</div>';
   }
+
   runBtn.addEventListener("click",run);
   resetBtn.addEventListener("click",reset);
 })();
