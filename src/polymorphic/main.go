@@ -20,6 +20,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  --payload  <payload-file>    Embed the reverse shell payload.")
 	}
 
+	
 	generate := flag.String("generate", "", "output binary path")
 	payload := flag.String("payload", "", "payload file to embed")
 	flag.Parse()
