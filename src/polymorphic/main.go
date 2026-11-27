@@ -4,8 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-
-	hiddenbytes "hidden-bytes/src/common"
 )
 
 func main() {
@@ -32,7 +30,7 @@ func main() {
 
 	gen := NewPolymorphicGenerator(payloadData)
 
-	if err := os.WriteFile(*generate, []byte(gen.GenerateSourceTemplate()), 0o755); err != nil {
+	if err := os.WriteFile(*generate, []byte(gen.GenerateSource()), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "polymorphic: error: %v\n", err)
 		os.Exit(1)
 	}
@@ -40,6 +38,4 @@ func main() {
 	fmt.Printf("[OK] Generated polymorphic program: %s\n", *generate)
 	fmt.Println("[INFO] The payload is encrypted inside the generated program.")
 	fmt.Println("[INFO] Every run rewrites the program's own source, so its hash changes while its behaviour stays the same.")
-
-	_ = hiddenbytes.Base64Encode([]byte{})
 }

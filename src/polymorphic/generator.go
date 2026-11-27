@@ -93,10 +93,11 @@ func (g *PolymorphicGenerator) DecryptPayload() ([]byte, error) {
 	return plaintext, nil
 }
 
-// GenerateSourceTemplate returns a source code template for the polymorphic program.
-// Uses direct string building with bytes.Buffer instead of text/template.
-// This is the Go idiomatic alternative to Python-style string replacement.
-func (g *PolymorphicGenerator) GenerateSourceTemplate() string {
+// GenerateSource builds the polymorphic program source code using direct
+// string building with bytes.Buffer. No templating engine is used - just
+// plain Go string concatenation, which is simpler and clearer than
+// Python-style string replacement or Go text/template.
+func (g *PolymorphicGenerator) GenerateSource() string {
 	var sb bytes.Buffer
 
 	sb.WriteString(`package main
